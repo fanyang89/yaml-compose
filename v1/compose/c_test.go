@@ -338,3 +338,139 @@ items: [layer]
 	require.Error(err)
 	require.Contains(err.Error(), "unsupported list strategy")
 }
+
+func TestComposeExtractLayerPath(t *testing.T) {
+	require := require.New(t)
+
+	c := compose.NewMock("base.yaml", []string{"1-layer.yaml"})
+	c.ExtractLayerPath = "app.db"
+	fs := c.GetFilesystem()
+
+	base := `app:
+  db:
+    host: base
+    pool: 10
+    ports: [5432]
+  cache: true
+keep: value
+`
+	layer := `noise: should-not-merge
+app:
+  db:
+    host: layer
+    ports: [5433]
+`
+
+	err := fs.WriteFile("base.yaml", []byte(base), 0755)
+	require.NoError(err)
+	err = fs.Mkdir("base.yaml.d", 0755)
+	require.NoError(err)
+	err = fs.WriteFile("base.yaml.d/1-layer.yaml", []byte(layer), 0755)
+	require.NoError(err)
+
+	out, err := c.Run()
+	require.NoError(err)
+
+	var got map[string]interface{}
+	err = yaml.Unmarshal([]byte(out), &got)
+	require.NoError(err)
+
+	app := got["app"].(map[string]interface{})
+	db := app["db"].(map[string]interface{})
+	require.Equal("layer", db["host"])
+	require.Equal(10, db["pool"])
+	require.Equal([]interface{}{5433}, db["ports"])
+	require.Equal(true, app["cache"])
+	require.Equal("value", got["keep"])
+	require.NotContains(got, "noise")
+}
+
+func TestComposeExtractLayerPathSkipsLayerWhenPathMissing(t *testing.T) {
+	require := require.New(t)
+
+	c := compose.NewMock("base.yaml", []string{"1-layer.yaml"})
+	c.ExtractLayerPath = "app.db"
+	fs := c.GetFilesystem()
+
+	base := `app:
+  db:
+    host: base
+  cache: true
+`
+	layer := `app:
+  cache: false
+`
+
+	err := fs.WriteFile("base.yaml", []byte(base), 0755)
+	require.NoError(err)
+	err = fs.Mkdir("base.yaml.d", 0755)
+	require.NoError(err)
+	err = fs.WriteFile("base.yaml.d/1-layer.yaml", []byte(layer), 0755)
+	require.NoError(err)
+
+	out, err := c.Run()
+	require.NoError(err)
+
+	var got map[string]interface{}
+	err = yaml.Unmarshal([]byte(out), &got)
+	require.NoError(err)
+
+	app := got["app"].(map[string]interface{})
+	db := app["db"].(map[string]interface{})
+	require.Equal("base", db["host"])
+	require.Equal(true, app["cache"])
+}
+
+func TestComposeExtractLayerPathSupportsEscapedDotKey(t *testing.T) {
+	require := require.New(t)
+
+	c := compose.NewMock("base.yaml", []string{"1-layer.yaml"})
+	c.ExtractLayerPath = `app.db\.main`
+	fs := c.GetFilesystem()
+
+	base := `app:
+  db.main:
+    ports: [5432]
+`
+	layer := `app:
+  db.main:
+    ports: [5433]
+`
+
+	err := fs.WriteFile("base.yaml", []byte(base), 0755)
+	require.NoError(err)
+	err = fs.Mkdir("base.yaml.d", 0755)
+	require.NoError(err)
+	err = fs.WriteFile("base.yaml.d/1-layer.yaml", []byte(layer), 0755)
+	require.NoError(err)
+
+	out, err := c.Run()
+	require.NoError(err)
+
+	var got map[string]interface{}
+	err = yaml.Unmarshal([]byte(out), &got)
+	require.NoError(err)
+
+	app := got["app"].(map[string]interface{})
+	dbMain := app["db.main"].(map[string]interface{})
+	require.Equal([]interface{}{5433}, dbMain["ports"])
+}
+
+func TestComposeReturnsErrorForInvalidExtractLayerPath(t *testing.T) {
+	require := require.New(t)
+
+	c := compose.NewMock("base.yaml", []string{"1-layer.yaml"})
+	c.ExtractLayerPath = "app."
+	fs := c.GetFilesystem()
+
+	err := fs.WriteFile("base.yaml", []byte(baseYAML), 0755)
+	require.NoError(err)
+	err = fs.Mkdir("base.yaml.d", 0755)
+	require.NoError(err)
+	err = fs.WriteFile("base.yaml.d/1-layer.yaml", []byte("xmas: false\n"), 0755)
+	require.NoError(err)
+
+	_, err = c.Run()
+	require.Error(err)
+	require.Contains(err.Error(), "invalid extract layer path")
+}

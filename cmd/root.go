@@ -13,7 +13,8 @@ import (
 )
 
 var (
-	flagOutput string
+	flagOutput       string
+	flagExtractLayer string
 )
 
 var rootCmd = &cobra.Command{
@@ -50,6 +51,7 @@ var rootCmd = &cobra.Command{
 		}
 
 		c := compose.New(base, layers)
+		c.ExtractLayerPath = flagExtractLayer
 		ret, err := c.Run()
 		if err != nil {
 			return fmt.Errorf("compose files: %w", err)
@@ -81,4 +83,5 @@ func Execute() {
 
 func init() {
 	rootCmd.Flags().StringVarP(&flagOutput, "output", "o", "", "config file")
+	rootCmd.Flags().StringVarP(&flagExtractLayer, "extract-layer", "e", "", "extract field path from each layer before compose")
 }
