@@ -116,6 +116,10 @@ func (c *Compose) GetFilesystem() *afero.Afero {
 	return c.fs
 }
 
+func (c *Compose) SetExtractLayerPath(path string) {
+	c.ExtractLayerPath = path
+}
+
 func (c *Compose) Run() (string, error) {
 	for _, layer := range c.Layers {
 		if err := validateLayerName(layer); err != nil {
