@@ -2,10 +2,8 @@ package cmd
 
 import (
 	"fmt"
-	"io/ioutil"
-	"log"
 	"os"
-	"path"
+	"path/filepath"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -25,22 +23,25 @@ var rootCmd = &cobra.Command{
 		base := args[0]
 		exists, err := fsutils.FileExists(base)
 		if err != nil {
-			log.Fatalf("Error: %v", err)
+			return fmt.Errorf("check base file: %w", err)
 		}
 		if !exists {
-			log.Fatalf("Error: %v not found", base)
+			return fmt.Errorf("%s not found", base)
 		}
 
 		baseDir := base + ".d"
 		exists, err = fsutils.DirExists(baseDir)
 		if err != nil {
-			log.Fatalf("Error: %v", err)
+			return fmt.Errorf("check layer directory: %w", err)
 		}
 		if !exists {
-			log.Fatalf("Error: %v not found", baseDir)
+			return fmt.Errorf("%s not found", baseDir)
 		}
 
-		layerInfos, err := ioutil.ReadDir(baseDir)
+		layerInfos, err := os.ReadDir(baseDir)
+		if err != nil {
+			return fmt.Errorf("read layer directory: %w", err)
+		}
 		layers := make([]string, 0)
 		for _, info := range layerInfos {
 			if strings.HasSuffix(info.Name(), ".yaml") || strings.HasSuffix(info.Name(), ".yml") {
@@ -51,17 +52,17 @@ var rootCmd = &cobra.Command{
 		c := compose.New(base, layers)
 		ret, err := c.Run()
 		if err != nil {
-			log.Fatalf("Error: %v", err)
+			return fmt.Errorf("compose files: %w", err)
 		}
 
 		if flagOutput != "" {
-			outputBaseDir := path.Dir(flagOutput)
+			outputBaseDir := filepath.Dir(flagOutput)
 			if err := os.MkdirAll(outputBaseDir, 0755); err != nil {
-				log.Fatalf("Error: %v", err)
+				return fmt.Errorf("create output directory: %w", err)
 			}
-			err = ioutil.WriteFile(flagOutput, []byte(ret), 0644)
+			err = os.WriteFile(flagOutput, []byte(ret), 0644)
 			if err != nil {
-				log.Fatalf("Error: %v", err)
+				return fmt.Errorf("write output file: %w", err)
 			}
 		} else {
 			fmt.Println(ret)
