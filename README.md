@@ -1,46 +1,27 @@
 # yaml-compose
 
-`yaml-compose` is a small CLI tool that builds one final YAML file from:
-
-- one base file (for example `app.yaml`)
-- one layer directory with the same name plus `.d` (for example `app.yaml.d/`)
-
-Layer files are loaded in order and merged onto the base document.
+`yaml-compose` is a small CLI tool that merges one base YAML file with layered override files.
 
 ## How it works
 
-Given:
+- Input base file: `base.yaml`
+- Layer directory: `base.yaml.d/`
+- Layer file pattern: `*.yaml` / `*.yml`
+- Apply order: sort by numeric prefix in file name, then by name
+  - Example: `1-default.yaml`, `10-prod.yaml`
 
-- `config.yaml`
-- `config.yaml.d/*.yaml` or `config.yaml.d/*.yml`
+## Merge semantics
 
-`yaml-compose` will:
-
-1. sort layer files by numeric prefix before `-` (e.g. `1-...`, `10-...`)
-2. load each layer in that order
-3. overwrite base top-level keys with layer values
-4. output the merged YAML
-
-## Install
-
-### Build binary
-
-```bash
-make build
-```
-
-This creates `./yaml-compose`.
-
-### Install to `GOPATH/bin`
-
-```bash
-make install
-```
+- `map + map`: deep merge recursively
+- `list + list`: override with layer list
+- scalar values: override with layer value
+- `null`: override to `null` (keep key, do not delete)
 
 ## Usage
 
 ```bash
-yaml-compose [YAML-FILE]
+yaml-compose base.yaml
+yaml-compose base.yaml -o out.yaml
 ```
 
 Options:
@@ -49,46 +30,45 @@ Options:
 
 ## Example
 
-Directory layout:
-
-```text
-config.yaml
-config.yaml.d/
-  1-dev.yaml
-  10-local.yaml
-```
-
-`config.yaml`:
+`base.yaml`:
 
 ```yaml
-service: app
-replicas: 2
-debug: false
+app:
+  db:
+    host: base
+    pool: 10
+    ports:
+      - 5432
+feature: true
 ```
 
-`config.yaml.d/1-dev.yaml`:
+`base.yaml.d/1-override.yaml`:
 
 ```yaml
-replicas: 1
-debug: true
+app:
+  db:
+    host: layer
+    ports:
+      - 5433
+feature: null
 ```
 
-Run:
+Output:
+
+```yaml
+app:
+  db:
+    host: layer
+    pool: 10
+    ports:
+    - 5433
+feature: null
+```
+
+## Build, test, install
 
 ```bash
-yaml-compose config.yaml -o merged.yaml
+make build
+make test
+make install
 ```
-
-`merged.yaml`:
-
-```yaml
-service: app
-replicas: 1
-debug: true
-```
-
-## Notes
-
-- Only files ending with `.yaml` or `.yml` are considered layers.
-- Layer filenames must include `-` (for example `10-feature.yaml`).
-- Merge strategy is key replacement at the root level.
