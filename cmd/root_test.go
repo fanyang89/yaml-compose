@@ -14,7 +14,8 @@ import (
 )
 
 type fakeComposer struct {
-	run func() (string, error)
+	run        func() (string, error)
+	setExtract func(string)
 }
 
 type errorWriter struct{}
@@ -25,6 +26,12 @@ func (errorWriter) Write([]byte) (int, error) {
 
 func (f fakeComposer) Run() (string, error) {
 	return f.run()
+}
+
+func (f fakeComposer) SetExtractLayerPath(path string) {
+	if f.setExtract != nil {
+		f.setExtract(path)
+	}
 }
 
 func setupComposeFiles(t *testing.T, fs afero.Fs) string {
@@ -86,6 +93,56 @@ func TestRootCmdPrintsWhenOutputFlagMissing(t *testing.T) {
 	err := cmd.Execute()
 	require.NoError(err)
 	require.Contains(out.String(), "service: layer")
+}
+
+func TestRootCmdExtractLayer(t *testing.T) {
+	require := require.New(t)
+	fs := afero.NewMemMapFs()
+
+	err := afero.WriteFile(fs, "/base.yaml", []byte("app:\n  db:\n    host: base\n    pool: 10\nkeep: true\n"), 0644)
+	require.NoError(err)
+	err = fs.MkdirAll("/base.yaml.d", 0755)
+	require.NoError(err)
+	err = afero.WriteFile(fs, "/base.yaml.d/1-layer.yaml", []byte("app:\n  db:\n    host: layer\nunrelated: x\n"), 0644)
+	require.NoError(err)
+
+	cmd := newTestRootCmd(fs, io.Discard, nil)
+	cmd.SetArgs([]string{"/base.yaml", "-e", "app.db", "-o", "/out.yaml"})
+	err = cmd.Execute()
+	require.NoError(err)
+
+	b, err := afero.ReadFile(fs, "/out.yaml")
+	require.NoError(err)
+	content := string(b)
+	require.Contains(content, "host: layer")
+	require.Contains(content, "pool: 10")
+	require.Contains(content, "keep: true")
+	require.NotContains(content, "unrelated")
+}
+
+func TestRootCmdPassesExtractLayerToComposer(t *testing.T) {
+	require := require.New(t)
+	fs := afero.NewMemMapFs()
+	base := setupComposeFiles(t, fs)
+
+	gotPath := ""
+	cmd := newTestRootCmd(fs, io.Discard, func(deps *commandDeps) {
+		deps.newCompose = func(string, []string, afero.Fs) composeRunner {
+			return fakeComposer{
+				setExtract: func(path string) {
+					gotPath = path
+				},
+				run: func() (string, error) {
+					return "service: layer\n", nil
+				},
+			}
+		}
+	})
+
+	cmd.SetArgs([]string{base, "-e", "app.db", "-o", "/out.yaml"})
+	err := cmd.Execute()
+	require.NoError(err)
+	require.Equal("app.db", gotPath)
 }
 
 func TestRootCmdFailsWhenPrintOutputFails(t *testing.T) {

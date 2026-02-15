@@ -16,6 +16,7 @@ import (
 
 type composeRunner interface {
 	Run() (string, error)
+	SetExtractLayerPath(string)
 }
 
 type commandDeps struct {
@@ -36,19 +37,21 @@ func defaultCommandDeps() commandDeps {
 
 func newRootCmd(deps commandDeps) *cobra.Command {
 	flagOutput := ""
+	flagExtractLayer := ""
 	cmd := &cobra.Command{
 		Use:  "yaml-compose [YAML-FILE]",
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runRootCommand(args[0], flagOutput, deps)
+			return runRootCommand(args[0], flagOutput, flagExtractLayer, deps)
 		},
 	}
 
 	cmd.Flags().StringVarP(&flagOutput, "output", "o", "", "config file")
+	cmd.Flags().StringVarP(&flagExtractLayer, "extract-layer", "e", "", "extract field path from each layer before compose")
 	return cmd
 }
 
-func runRootCommand(base, output string, deps commandDeps) error {
+func runRootCommand(base, output, extractLayer string, deps commandDeps) error {
 	exists, err := fsutils.FileExistsOn(deps.fs, base)
 	if err != nil {
 		return fmt.Errorf("check base file: %w", err)
@@ -73,6 +76,7 @@ func runRootCommand(base, output string, deps commandDeps) error {
 	layers := collectLayerFilenames(layerInfos)
 
 	c := deps.newCompose(base, layers, deps.fs)
+	c.SetExtractLayerPath(extractLayer)
 	ret, err := c.Run()
 	if err != nil {
 		return fmt.Errorf("compose files: %w", err)
