@@ -1,11 +1,12 @@
 /*
 Copyright © 2022 NAME HERE <EMAIL ADDRESS>
-
 */
 package main
 
 import "github.com/fanyang89/yaml-compose/cmd"
 
+var run = cmd.Execute
+
 func main() {
-	cmd.Execute()
+	run()
 }

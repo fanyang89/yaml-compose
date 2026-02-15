@@ -33,6 +33,47 @@ func TestLayerSort(t *testing.T) {
 	}, layers)
 }
 
+func TestLayerSortByNameWhenPrefixEqual(t *testing.T) {
+	require := require.New(t)
+
+	layers := []string{
+		"1-z.yaml",
+		"1-a.yaml",
+		"1-b.yaml",
+	}
+
+	sort.SliceStable(layers, compose.NewLayerComparator(layers))
+
+	require.Equal([]string{"1-a.yaml", "1-b.yaml", "1-z.yaml"}, layers)
+}
+
+func TestLayerSortDoesNotPanicForInvalidPrefix(t *testing.T) {
+	require := require.New(t)
+
+	layers := []string{"a-layer.yaml", "2-layer.yaml", "b-layer.yaml"}
+	require.NotPanics(func() {
+		sort.SliceStable(layers, compose.NewLayerComparator(layers))
+	})
+
+	require.Equal([]string{"2-layer.yaml", "a-layer.yaml", "b-layer.yaml"}, layers)
+}
+
+func TestLayerComparatorHandlesNonNumericVsNumeric(t *testing.T) {
+	require := require.New(t)
+
+	layers := []string{"a-layer.yaml", "1-layer.yaml"}
+	cmp := compose.NewLayerComparator(layers)
+	require.False(cmp(0, 1))
+}
+
+func TestLayerComparatorFallsBackToNameForSameNonNumericPrefix(t *testing.T) {
+	require := require.New(t)
+
+	layers := []string{"a-z.yaml", "a-a.yaml"}
+	cmp := compose.NewLayerComparator(layers)
+	require.False(cmp(0, 1))
+}
+
 var baseYAML = `doe: "a deer, a female deer"
 ray: "a drop of golden sun"
 pi: 3.14159
@@ -337,6 +378,96 @@ items: [layer]
 	_, err = c.Run()
 	require.Error(err)
 	require.Contains(err.Error(), "unsupported list strategy")
+
+}
+
+func TestComposeReturnsErrorForNonNumericLayerPrefix(t *testing.T) {
+	require := require.New(t)
+
+	c := compose.NewMock("base.yaml", []string{"a-layer.yaml"})
+	fs := c.GetFilesystem()
+	err := fs.WriteFile("base.yaml", []byte(baseYAML), 0755)
+	require.NoError(err)
+	err = fs.Mkdir("base.yaml.d", 0755)
+	require.NoError(err)
+	err = fs.WriteFile("base.yaml.d/a-layer.yaml", []byte("xmas: false\n"), 0755)
+	require.NoError(err)
+
+	_, err = c.Run()
+	require.Error(err)
+	require.Contains(err.Error(), "expected numeric order prefix")
+}
+
+func TestComposeReturnsErrorWhenBaseReadFails(t *testing.T) {
+	require := require.New(t)
+
+	c := compose.NewMock("base.yaml", nil)
+	_, err := c.Run()
+	require.Error(err)
+	require.Contains(err.Error(), "failed to read base compose file")
+}
+
+func TestComposeReturnsErrorWhenBaseYAMLIsInvalid(t *testing.T) {
+	require := require.New(t)
+
+	c := compose.NewMock("base.yaml", nil)
+	fs := c.GetFilesystem()
+	err := fs.WriteFile("base.yaml", []byte(":"), 0755)
+	require.NoError(err)
+
+	_, err = c.Run()
+	require.Error(err)
+	require.Contains(err.Error(), "failed to parse base compose file")
+}
+
+func TestComposeReturnsErrorWhenLayerReadFails(t *testing.T) {
+	require := require.New(t)
+
+	c := compose.NewMock("base.yaml", []string{"1-layer.yaml"})
+	fs := c.GetFilesystem()
+	err := fs.WriteFile("base.yaml", []byte(baseYAML), 0755)
+	require.NoError(err)
+	err = fs.Mkdir("base.yaml.d", 0755)
+	require.NoError(err)
+
+	_, err = c.Run()
+	require.Error(err)
+	require.Contains(err.Error(), "failed to read layer compose file")
+}
+
+func TestComposeReturnsErrorWhenLayerYAMLIsInvalid(t *testing.T) {
+	require := require.New(t)
+
+	c := compose.NewMock("base.yaml", []string{"1-layer.yaml"})
+	fs := c.GetFilesystem()
+	err := fs.WriteFile("base.yaml", []byte(baseYAML), 0755)
+	require.NoError(err)
+	err = fs.Mkdir("base.yaml.d", 0755)
+	require.NoError(err)
+	err = fs.WriteFile("base.yaml.d/1-layer.yaml", []byte("a: [1,2"), 0755)
+	require.NoError(err)
+
+	_, err = c.Run()
+	require.Error(err)
+	require.Contains(err.Error(), "failed to parse layer compose file")
+}
+
+func TestComposeWithoutLayersReturnsBaseContent(t *testing.T) {
+	require := require.New(t)
+
+	c := compose.NewMock("base.yaml", nil)
+	fs := c.GetFilesystem()
+	err := fs.WriteFile("base.yaml", []byte(baseYAML), 0755)
+	require.NoError(err)
+
+	out, err := c.Run()
+	require.NoError(err)
+
+	var got map[string]interface{}
+	err = yaml.Unmarshal([]byte(out), &got)
+	require.NoError(err)
+	require.Equal(true, got["xmas"])
+	require.Equal("a drop of golden sun", got["ray"])
 }
 
 func TestComposeExtractLayerPath(t *testing.T) {

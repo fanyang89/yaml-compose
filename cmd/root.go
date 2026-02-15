@@ -17,12 +17,23 @@ var (
 	flagExtractLayer string
 )
 
+var (
+	fileExists     = fsutils.FileExists
+	dirExists      = fsutils.DirExists
+	readDir        = os.ReadDir
+	mkdirAll       = os.MkdirAll
+	writeFile      = os.WriteFile
+	printLine      = fmt.Println
+	executeRootCmd = func() error { return rootCmd.Execute() }
+	exitProcess    = os.Exit
+)
+
 var rootCmd = &cobra.Command{
 	Use:  "yaml-compose [YAML-FILE]",
 	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		base := args[0]
-		exists, err := fsutils.FileExists(base)
+		exists, err := fileExists(base)
 		if err != nil {
 			return fmt.Errorf("check base file: %w", err)
 		}
@@ -31,7 +42,7 @@ var rootCmd = &cobra.Command{
 		}
 
 		baseDir := base + ".d"
-		exists, err = fsutils.DirExists(baseDir)
+		exists, err = dirExists(baseDir)
 		if err != nil {
 			return fmt.Errorf("check layer directory: %w", err)
 		}
@@ -39,7 +50,7 @@ var rootCmd = &cobra.Command{
 			return fmt.Errorf("%s not found", baseDir)
 		}
 
-		layerInfos, err := os.ReadDir(baseDir)
+		layerInfos, err := readDir(baseDir)
 		if err != nil {
 			return fmt.Errorf("read layer directory: %w", err)
 		}
@@ -59,15 +70,15 @@ var rootCmd = &cobra.Command{
 
 		if flagOutput != "" {
 			outputBaseDir := filepath.Dir(flagOutput)
-			if err := os.MkdirAll(outputBaseDir, 0755); err != nil {
+			if err := mkdirAll(outputBaseDir, 0755); err != nil {
 				return fmt.Errorf("create output directory: %w", err)
 			}
-			err = os.WriteFile(flagOutput, []byte(ret), 0644)
+			err = writeFile(flagOutput, []byte(ret), 0644)
 			if err != nil {
 				return fmt.Errorf("write output file: %w", err)
 			}
 		} else {
-			fmt.Println(ret)
+			printLine(ret)
 		}
 
 		return nil
@@ -75,9 +86,9 @@ var rootCmd = &cobra.Command{
 }
 
 func Execute() {
-	err := rootCmd.Execute()
+	err := executeRootCmd()
 	if err != nil {
-		os.Exit(1)
+		exitProcess(1)
 	}
 }
 

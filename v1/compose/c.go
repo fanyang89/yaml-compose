@@ -13,20 +13,31 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+var yamlMarshal = yaml.Marshal
+
 func NewLayerComparator(layers []string) func(i, j int) bool {
 	return func(i, j int) bool {
 		ap, aname := part(layers[i])
 		bp, bname := part(layers[j])
+
+		api, aerr := strconv.Atoi(ap)
+		bpi, berr := strconv.Atoi(bp)
+		if aerr == nil && berr == nil {
+			if api != bpi {
+				return api < bpi
+			}
+			return strings.Compare(aname, bname) < 0
+		}
+
+		if aerr == nil {
+			return true
+		}
+		if berr == nil {
+			return false
+		}
+
 		if ap != bp {
-			api, err := strconv.Atoi(ap)
-			if err != nil {
-				panic(err)
-			}
-			bpi, err := strconv.Atoi(bp)
-			if err != nil {
-				panic(err)
-			}
-			return api < bpi
+			return strings.Compare(ap, bp) < 0
 		}
 		return strings.Compare(aname, bname) < 0
 	}
@@ -154,7 +165,7 @@ func (c *Compose) Run() (string, error) {
 		b = mergeMapsWithStrategy(b, l, strategy, nil)
 	}
 
-	out, err := yaml.Marshal(b)
+	out, err := yamlMarshal(b)
 	if err != nil {
 		return "", fmt.Errorf("failed to marshal compose file: %s", err)
 	}
