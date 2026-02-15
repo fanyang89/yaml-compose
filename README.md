@@ -119,7 +119,7 @@ feature: null
 ## Build, test, install
 
 ```bash
-make build
-make test
-make install
+task build
+task test
+task install
 ```

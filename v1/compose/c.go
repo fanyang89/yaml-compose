@@ -95,14 +95,14 @@ type layerMergeStrategy struct {
 }
 
 func New(base string, layers []string) *Compose {
-	return newWithFs(base, layers, afero.NewOsFs())
+	return NewWithFs(base, layers, afero.NewOsFs())
 }
 
 func NewMock(base string, layers []string) *Compose {
-	return newWithFs(base, layers, afero.NewMemMapFs())
+	return NewWithFs(base, layers, afero.NewMemMapFs())
 }
 
-func newWithFs(base string, layers []string, fs afero.Fs) *Compose {
+func NewWithFs(base string, layers []string, fs afero.Fs) *Compose {
 	return &Compose{
 		Base:    base,
 		Layers:  layers,

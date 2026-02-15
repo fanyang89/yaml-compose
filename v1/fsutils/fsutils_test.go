@@ -1,11 +1,11 @@
 package fsutils
 
 import (
-	"errors"
 	"os"
 	"path/filepath"
 	"testing"
 
+	"github.com/spf13/afero"
 	"github.com/stretchr/testify/require"
 )
 
@@ -30,15 +30,23 @@ func TestFileExistsReturnsFalseForMissingPath(t *testing.T) {
 	require.False(exists)
 }
 
-func TestFileExistsReturnsErrorWhenStatFails(t *testing.T) {
+func TestFileExistsOnMemFs(t *testing.T) {
+	require := require.New(t)
+	fs := afero.NewMemMapFs()
+	err := afero.WriteFile(fs, "/a.txt", []byte("x"), 0644)
+	require.NoError(err)
+
+	exists, err := FileExistsOn(fs, "/a.txt")
+	require.NoError(err)
+	require.True(exists)
+}
+
+func TestFileExistsOnReturnsErrorForInvalidPath(t *testing.T) {
 	require := require.New(t)
 
-	exists, err := fileExistsWithStat(func(string) (os.FileInfo, error) {
-		return nil, errors.New("stat failed")
-	}, "a.txt")
+	exists, err := FileExistsOn(afero.NewOsFs(), "bad\x00path")
 	require.Error(err)
 	require.False(exists)
-	require.Contains(err.Error(), "stat failed")
 }
 
 func TestDirExists(t *testing.T) {
@@ -73,13 +81,21 @@ func TestDirExistsReturnsErrorForFilePath(t *testing.T) {
 	require.Contains(err.Error(), "not a directory")
 }
 
-func TestDirExistsReturnsErrorWhenStatFails(t *testing.T) {
+func TestDirExistsOnMemFs(t *testing.T) {
+	require := require.New(t)
+	fs := afero.NewMemMapFs()
+	err := fs.MkdirAll("/a-dir", 0755)
+	require.NoError(err)
+
+	exists, err := DirExistsOn(fs, "/a-dir")
+	require.NoError(err)
+	require.True(exists)
+}
+
+func TestDirExistsOnReturnsErrorForInvalidPath(t *testing.T) {
 	require := require.New(t)
 
-	exists, err := dirExistsWithStat(func(string) (os.FileInfo, error) {
-		return nil, errors.New("stat failed")
-	}, "a-dir")
+	exists, err := DirExistsOn(afero.NewOsFs(), "bad\x00path")
 	require.Error(err)
 	require.False(exists)
-	require.Contains(err.Error(), "stat failed")
 }

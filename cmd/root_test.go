@@ -1,12 +1,14 @@
 package cmd
 
 import (
+	"bytes"
 	"errors"
-	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"testing"
 
+	"github.com/spf13/afero"
 	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/require"
 )
@@ -15,75 +17,95 @@ type fakeComposer struct {
 	run func() (string, error)
 }
 
+type errorWriter struct{}
+
+func (errorWriter) Write([]byte) (int, error) {
+	return 0, errors.New("write stdout failed")
+}
+
 func (f fakeComposer) Run() (string, error) {
 	return f.run()
 }
 
-func writeRootCmdTestFiles(t *testing.T) (string, string) {
+func setupComposeFiles(t *testing.T, fs afero.Fs) string {
 	t.Helper()
 
-	tmpDir := t.TempDir()
-	base := filepath.Join(tmpDir, "a.yaml")
-	baseDir := base + ".d"
-
-	err := os.WriteFile(base, []byte("service: base\n"), 0644)
-	require.NoError(t, err)
-	err = os.MkdirAll(baseDir, 0755)
-	require.NoError(t, err)
-	err = os.WriteFile(filepath.Join(baseDir, "1-layer.yaml"), []byte("service: layer\n"), 0644)
-	require.NoError(t, err)
-
-	return tmpDir, base
+	base := "/base.yaml"
+	setupComposeFilesAt(t, fs, base)
+	return base
 }
 
-func newTestRootCmd(overrides func(*commandDeps)) *cobra.Command {
+func setupComposeFilesAt(t *testing.T, fs afero.Fs, base string) {
+	t.Helper()
+
+	err := afero.WriteFile(fs, base, []byte("service: base\n"), 0644)
+	require.NoError(t, err)
+	err = fs.MkdirAll(base+".d", 0755)
+	require.NoError(t, err)
+	err = afero.WriteFile(fs, base+".d/1-layer.yaml", []byte("service: layer\n"), 0644)
+	require.NoError(t, err)
+}
+
+func newTestRootCmd(fs afero.Fs, stdout io.Writer, override func(*commandDeps)) *cobra.Command {
 	deps := defaultCommandDeps()
-	if overrides != nil {
-		overrides(&deps)
+	deps.fs = fs
+	deps.stdout = stdout
+	if override != nil {
+		override(&deps)
 	}
-	return newRootCmd(deps)
+	cmd := newRootCmd(deps)
+	cmd.SilenceErrors = true
+	cmd.SilenceUsage = true
+	cmd.SetErr(io.Discard)
+	return cmd
 }
 
 func TestRootCmdWritesOutputFile(t *testing.T) {
 	require := require.New(t)
+	fs := afero.NewMemMapFs()
+	base := setupComposeFiles(t, fs)
 
-	tmpDir, base := writeRootCmdTestFiles(t)
-	out := filepath.Join(tmpDir, "out.yaml")
-
-	cmd := newTestRootCmd(nil)
-	cmd.SetArgs([]string{base, "-o", out})
+	cmd := newTestRootCmd(fs, io.Discard, nil)
+	cmd.SetArgs([]string{base, "-o", "/out.yaml"})
 	err := cmd.Execute()
 	require.NoError(err)
 
-	b, err := os.ReadFile(out)
+	b, err := afero.ReadFile(fs, "/out.yaml")
 	require.NoError(err)
 	require.Contains(string(b), "service: layer")
 }
 
 func TestRootCmdPrintsWhenOutputFlagMissing(t *testing.T) {
 	require := require.New(t)
+	fs := afero.NewMemMapFs()
+	base := setupComposeFiles(t, fs)
+	var out bytes.Buffer
 
-	_, base := writeRootCmdTestFiles(t)
-	printed := ""
-	cmd := newTestRootCmd(func(deps *commandDeps) {
-		deps.printLine = func(args ...interface{}) (int, error) {
-			printed = fmt.Sprint(args...)
-			return len(printed), nil
-		}
-	})
-
+	cmd := newTestRootCmd(fs, &out, nil)
 	cmd.SetArgs([]string{base})
 	err := cmd.Execute()
 	require.NoError(err)
-	require.Contains(printed, "service: layer")
+	require.Contains(out.String(), "service: layer")
+}
+
+func TestRootCmdFailsWhenPrintOutputFails(t *testing.T) {
+	require := require.New(t)
+	fs := afero.NewMemMapFs()
+	base := setupComposeFiles(t, fs)
+
+	cmd := newTestRootCmd(fs, errorWriter{}, nil)
+	cmd.SetArgs([]string{base})
+	err := cmd.Execute()
+	require.Error(err)
+	require.Contains(err.Error(), "print output")
 }
 
 func TestRootCmdFailsWhenBaseMissing(t *testing.T) {
 	require := require.New(t)
+	fs := afero.NewMemMapFs()
 
-	base := filepath.Join(t.TempDir(), "missing.yaml")
-	cmd := newTestRootCmd(nil)
-	cmd.SetArgs([]string{base})
+	cmd := newTestRootCmd(fs, io.Discard, nil)
+	cmd.SetArgs([]string{"/missing.yaml"})
 	err := cmd.Execute()
 	require.Error(err)
 	require.Contains(err.Error(), "not found")
@@ -91,47 +113,38 @@ func TestRootCmdFailsWhenBaseMissing(t *testing.T) {
 
 func TestRootCmdFailsWhenBaseCheckFails(t *testing.T) {
 	require := require.New(t)
+	fs := afero.NewOsFs()
 
-	cmd := newTestRootCmd(func(deps *commandDeps) {
-		deps.fileExists = func(string) (bool, error) {
-			return false, errors.New("stat failed")
-		}
-	})
-
-	cmd.SetArgs([]string{"base.yaml"})
+	cmd := newTestRootCmd(fs, io.Discard, nil)
+	cmd.SetArgs([]string{"bad\x00.yaml"})
 	err := cmd.Execute()
 	require.Error(err)
 	require.Contains(err.Error(), "check base file")
-	require.Contains(err.Error(), "stat failed")
 }
 
 func TestRootCmdFailsWhenLayerDirMissing(t *testing.T) {
 	require := require.New(t)
-
-	base := filepath.Join(t.TempDir(), "a.yaml")
-	err := os.WriteFile(base, []byte("service: base\n"), 0644)
+	fs := afero.NewMemMapFs()
+	err := afero.WriteFile(fs, "/base.yaml", []byte("service: base\n"), 0644)
 	require.NoError(err)
 
-	cmd := newTestRootCmd(nil)
-	cmd.SetArgs([]string{base})
+	cmd := newTestRootCmd(fs, io.Discard, nil)
+	cmd.SetArgs([]string{"/base.yaml"})
 	err = cmd.Execute()
 	require.Error(err)
-	require.Contains(err.Error(), "not found")
-	require.Contains(err.Error(), base+".d")
+	require.Contains(err.Error(), "/base.yaml.d not found")
 }
 
 func TestRootCmdFailsWhenLayerPathIsFile(t *testing.T) {
 	require := require.New(t)
-
-	tmpDir := t.TempDir()
-	base := filepath.Join(tmpDir, "a.yaml")
-	err := os.WriteFile(base, []byte("service: base\n"), 0644)
+	fs := afero.NewMemMapFs()
+	err := afero.WriteFile(fs, "/base.yaml", []byte("service: base\n"), 0644)
 	require.NoError(err)
-	err = os.WriteFile(base+".d", []byte("not a dir\n"), 0644)
+	err = afero.WriteFile(fs, "/base.yaml.d", []byte("not a dir\n"), 0644)
 	require.NoError(err)
 
-	cmd := newTestRootCmd(nil)
-	cmd.SetArgs([]string{base})
+	cmd := newTestRootCmd(fs, io.Discard, nil)
+	cmd.SetArgs([]string{"/base.yaml"})
 	err = cmd.Execute()
 	require.Error(err)
 	require.Contains(err.Error(), "check layer directory")
@@ -140,50 +153,45 @@ func TestRootCmdFailsWhenLayerPathIsFile(t *testing.T) {
 
 func TestRootCmdFailsWhenReadLayerDirectoryFails(t *testing.T) {
 	require := require.New(t)
+	fs := afero.NewOsFs()
+	tmpDir := t.TempDir()
+	base := filepath.Join(tmpDir, "base.yaml")
+	setupComposeFilesAt(t, fs, base)
 
-	base := filepath.Join(t.TempDir(), "a.yaml")
-	err := os.WriteFile(base, []byte("service: base\n"), 0644)
+	baseDir := base + ".d"
+	err := os.Chmod(baseDir, 0111)
 	require.NoError(err)
-	cmd := newTestRootCmd(func(deps *commandDeps) {
-		deps.dirExists = func(string) (bool, error) {
-			return true, nil
-		}
-		deps.readDir = func(string) ([]os.DirEntry, error) {
-			return nil, errors.New("read failed")
-		}
+	t.Cleanup(func() {
+		_ = os.Chmod(baseDir, 0755)
 	})
 
+	cmd := newTestRootCmd(fs, io.Discard, nil)
 	cmd.SetArgs([]string{base})
 	err = cmd.Execute()
 	require.Error(err)
 	require.Contains(err.Error(), "read layer directory")
-	require.Contains(err.Error(), "read failed")
 }
 
 func TestRootCmdIncludesYAMLAndYMLExtensionsOnly(t *testing.T) {
 	require := require.New(t)
-
-	tmpDir := t.TempDir()
-	base := filepath.Join(tmpDir, "a.yaml")
-	baseDir := base + ".d"
-	err := os.WriteFile(base, []byte("service: base\n"), 0644)
+	fs := afero.NewMemMapFs()
+	err := afero.WriteFile(fs, "/base.yaml", []byte("service: base\n"), 0644)
 	require.NoError(err)
-	err = os.MkdirAll(baseDir, 0755)
+	err = fs.MkdirAll("/base.yaml.d", 0755)
 	require.NoError(err)
-	err = os.WriteFile(filepath.Join(baseDir, "1-layer.yaml"), []byte("service: yaml\n"), 0644)
+	err = afero.WriteFile(fs, "/base.yaml.d/1-layer.yaml", []byte("service: yaml\n"), 0644)
 	require.NoError(err)
-	err = os.WriteFile(filepath.Join(baseDir, "2-layer.yml"), []byte("service: yml\n"), 0644)
+	err = afero.WriteFile(fs, "/base.yaml.d/2-layer.yml", []byte("service: yml\n"), 0644)
 	require.NoError(err)
-	err = os.WriteFile(filepath.Join(baseDir, "3-layer.txt"), []byte("service: ignored\n"), 0644)
+	err = afero.WriteFile(fs, "/base.yaml.d/3-layer.txt", []byte("service: ignored\n"), 0644)
 	require.NoError(err)
 
-	out := filepath.Join(tmpDir, "out.yaml")
-	cmd := newTestRootCmd(nil)
-	cmd.SetArgs([]string{base, "-o", out})
+	cmd := newTestRootCmd(fs, io.Discard, nil)
+	cmd.SetArgs([]string{"/base.yaml", "-o", "/out.yaml"})
 	err = cmd.Execute()
 	require.NoError(err)
 
-	b, err := os.ReadFile(out)
+	b, err := afero.ReadFile(fs, "/out.yaml")
 	require.NoError(err)
 	require.Contains(string(b), "service: yml")
 	require.NotContains(string(b), "ignored")
@@ -191,26 +199,18 @@ func TestRootCmdIncludesYAMLAndYMLExtensionsOnly(t *testing.T) {
 
 func TestRootCmdFailsWhenComposeFails(t *testing.T) {
 	require := require.New(t)
+	fs := afero.NewMemMapFs()
+	base := setupComposeFiles(t, fs)
 
-	base := filepath.Join(t.TempDir(), "a.yaml")
-	err := os.WriteFile(base, []byte("service: base\n"), 0644)
-	require.NoError(err)
-	cmd := newTestRootCmd(func(deps *commandDeps) {
-		deps.dirExists = func(string) (bool, error) {
-			return true, nil
-		}
-		deps.readDir = func(string) ([]os.DirEntry, error) {
-			return []os.DirEntry{}, nil
-		}
-		deps.newCompose = func(string, []string) composeRunner {
+	cmd := newTestRootCmd(fs, io.Discard, func(deps *commandDeps) {
+		deps.newCompose = func(string, []string, afero.Fs) composeRunner {
 			return fakeComposer{run: func() (string, error) {
 				return "", errors.New("compose failed")
 			}}
 		}
 	})
-
 	cmd.SetArgs([]string{base})
-	err = cmd.Execute()
+	err := cmd.Execute()
 	require.Error(err)
 	require.Contains(err.Error(), "compose files")
 	require.Contains(err.Error(), "compose failed")
@@ -218,54 +218,44 @@ func TestRootCmdFailsWhenComposeFails(t *testing.T) {
 
 func TestRootCmdFailsWhenCreateOutputDirectoryFails(t *testing.T) {
 	require := require.New(t)
+	mem := afero.NewMemMapFs()
+	base := setupComposeFiles(t, mem)
+	fs := afero.NewReadOnlyFs(mem)
 
-	tmpDir, base := writeRootCmdTestFiles(t)
-	out := filepath.Join(tmpDir, "nested", "out.yaml")
-	cmd := newTestRootCmd(func(deps *commandDeps) {
-		deps.mkdirAll = func(string, os.FileMode) error {
-			return errors.New("mkdir failed")
-		}
-	})
-
-	cmd.SetArgs([]string{base, "-o", out})
+	cmd := newTestRootCmd(fs, io.Discard, nil)
+	cmd.SetArgs([]string{base, "-o", "/nested/out.yaml"})
 	err := cmd.Execute()
 	require.Error(err)
 	require.Contains(err.Error(), "create output directory")
-	require.Contains(err.Error(), "mkdir failed")
 }
 
 func TestRootCmdFailsWhenWriteOutputFails(t *testing.T) {
 	require := require.New(t)
+	fs := afero.NewOsFs()
+	tmpDir := t.TempDir()
+	base := filepath.Join(tmpDir, "base.yaml")
+	setupComposeFilesAt(t, fs, base)
 
-	tmpDir, base := writeRootCmdTestFiles(t)
-	out := filepath.Join(tmpDir, "out.yaml")
-	cmd := newTestRootCmd(func(deps *commandDeps) {
-		deps.writeFile = func(string, []byte, os.FileMode) error {
-			return errors.New("write failed")
-		}
-	})
-
-	cmd.SetArgs([]string{base, "-o", out})
+	cmd := newTestRootCmd(fs, io.Discard, nil)
+	cmd.SetArgs([]string{base, "-o", "bad\x00.yaml"})
 	err := cmd.Execute()
 	require.Error(err)
 	require.Contains(err.Error(), "write output file")
-	require.Contains(err.Error(), "write failed")
 }
 
 func TestCollectLayerFilenames(t *testing.T) {
 	require := require.New(t)
+	fs := afero.NewMemMapFs()
+	err := afero.WriteFile(fs, "/1-a.yaml", []byte("a: 1\n"), 0644)
+	require.NoError(err)
+	err = afero.WriteFile(fs, "/2-b.yml", []byte("b: 2\n"), 0644)
+	require.NoError(err)
+	err = afero.WriteFile(fs, "/3-c.txt", []byte("c: 3\n"), 0644)
+	require.NoError(err)
 
-	tmpDir := t.TempDir()
-	err := os.WriteFile(filepath.Join(tmpDir, "1-a.yaml"), []byte("a: 1\n"), 0644)
+	infos, err := afero.ReadDir(fs, "/")
 	require.NoError(err)
-	err = os.WriteFile(filepath.Join(tmpDir, "2-b.yml"), []byte("b: 2\n"), 0644)
-	require.NoError(err)
-	err = os.WriteFile(filepath.Join(tmpDir, "3-c.txt"), []byte("c: 3\n"), 0644)
-	require.NoError(err)
-
-	entries, err := os.ReadDir(tmpDir)
-	require.NoError(err)
-	layers := collectLayerFilenames(entries)
+	layers := collectLayerFilenames(infos)
 	require.ElementsMatch([]string{"1-a.yaml", "2-b.yml"}, layers)
 }
 
@@ -300,17 +290,22 @@ func TestExecuteUsesRootCommand(t *testing.T) {
 	require := require.New(t)
 
 	originalRootCmd := rootCmd
+	originalExit := osExit
 	t.Cleanup(func() {
 		rootCmd = originalRootCmd
+		osExit = originalExit
 	})
 
-	tmpDir, base := writeRootCmdTestFiles(t)
-	out := filepath.Join(tmpDir, "out.yaml")
-	rootCmd = newRootCmd(defaultCommandDeps())
-	rootCmd.SetArgs([]string{base, "-o", out})
+	fs := afero.NewMemMapFs()
+	base := setupComposeFiles(t, fs)
+	rootCmd = newTestRootCmd(fs, io.Discard, nil)
+	rootCmd.SetArgs([]string{base, "-o", "/out.yaml"})
+	osExit = func(int) {
+		require.Fail("osExit should not be called")
+	}
 
 	Execute()
-	b, err := os.ReadFile(out)
+	b, err := afero.ReadFile(fs, "/out.yaml")
 	require.NoError(err)
 	require.Contains(string(b), "service: layer")
 }
