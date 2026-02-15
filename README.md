@@ -12,10 +12,44 @@
 
 ## Merge semantics
 
-- `map + map`: deep merge recursively
-- `list + list`: override with layer list
+- `map + map`: default is `deep` merge recursively
+- `list + list`: default is `override` with layer list
 - scalar values: override with layer value
 - `null`: override to `null` (keep key, do not delete)
+
+### Layer merge metadata
+
+Layer files can optionally use two YAML documents separated by `---`:
+
+1. metadata document (strategy config)
+2. data document (actual layer values)
+
+When only one YAML document is present, it is treated as data (backward compatible).
+
+Supported strategies:
+
+- `map`: `deep` | `override`
+- `list`: `override` | `append` | `prepend`
+
+Metadata schema:
+
+```yaml
+merge:
+  defaults:
+    map: deep
+    list: override
+  paths:
+    app.db:
+      map: override
+    app.db.ports:
+      list: append
+```
+
+Path rules:
+
+- Dot path uses exact match only (no wildcard)
+- If a key contains `.`, escape it with `\\.` in metadata path (for example: `app.db\\.main.ports`)
+- Priority: `paths` > `defaults` > built-in defaults (`map=deep`, `list=override`)
 
 ## Usage
 
@@ -45,6 +79,11 @@ feature: true
 `base.yaml.d/1-override.yaml`:
 
 ```yaml
+merge:
+  paths:
+    app.db.ports:
+      list: append
+---
 app:
   db:
     host: layer
@@ -61,6 +100,7 @@ app:
     host: layer
     pool: 10
     ports:
+    - 5432
     - 5433
 feature: null
 ```
