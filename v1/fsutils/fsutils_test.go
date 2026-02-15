@@ -33,15 +33,9 @@ func TestFileExistsReturnsFalseForMissingPath(t *testing.T) {
 func TestFileExistsReturnsErrorWhenStatFails(t *testing.T) {
 	require := require.New(t)
 
-	originalStat := stat
-	stat = func(string) (os.FileInfo, error) {
+	exists, err := fileExistsWithStat(func(string) (os.FileInfo, error) {
 		return nil, errors.New("stat failed")
-	}
-	t.Cleanup(func() {
-		stat = originalStat
-	})
-
-	exists, err := FileExists("a.txt")
+	}, "a.txt")
 	require.Error(err)
 	require.False(exists)
 	require.Contains(err.Error(), "stat failed")
@@ -82,15 +76,9 @@ func TestDirExistsReturnsErrorForFilePath(t *testing.T) {
 func TestDirExistsReturnsErrorWhenStatFails(t *testing.T) {
 	require := require.New(t)
 
-	originalStat := stat
-	stat = func(string) (os.FileInfo, error) {
+	exists, err := dirExistsWithStat(func(string) (os.FileInfo, error) {
 		return nil, errors.New("stat failed")
-	}
-	t.Cleanup(func() {
-		stat = originalStat
-	})
-
-	exists, err := DirExists("a-dir")
+	}, "a-dir")
 	require.Error(err)
 	require.False(exists)
 	require.Contains(err.Error(), "stat failed")

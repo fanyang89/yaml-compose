@@ -5,8 +5,6 @@ package main
 
 import "github.com/fanyang89/yaml-compose/cmd"
 
-var run = cmd.Execute
-
 func main() {
-	run()
+	cmd.Execute()
 }

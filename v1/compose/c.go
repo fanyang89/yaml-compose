@@ -13,7 +13,7 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-var yamlMarshal = yaml.Marshal
+type marshalFunc func(interface{}) ([]byte, error)
 
 func NewLayerComparator(layers []string) func(i, j int) bool {
 	return func(i, j int) bool {
@@ -44,10 +44,10 @@ func NewLayerComparator(layers []string) func(i, j int) bool {
 }
 
 type Compose struct {
-	Base             string
-	Layers           []string
-	ExtractLayerPath string
-	fs               *afero.Afero
+	Base    string
+	Layers  []string
+	fs      *afero.Afero
+	marshal marshalFunc
 }
 
 type mapMergeStrategy string
@@ -95,18 +95,19 @@ type layerMergeStrategy struct {
 }
 
 func New(base string, layers []string) *Compose {
-	return &Compose{
-		Base:   base,
-		Layers: layers,
-		fs:     &afero.Afero{Fs: afero.NewOsFs()},
-	}
+	return newWithFs(base, layers, afero.NewOsFs())
 }
 
 func NewMock(base string, layers []string) *Compose {
+	return newWithFs(base, layers, afero.NewMemMapFs())
+}
+
+func newWithFs(base string, layers []string, fs afero.Fs) *Compose {
 	return &Compose{
-		Base:   base,
-		Layers: layers,
-		fs:     &afero.Afero{Fs: afero.NewMemMapFs()},
+		Base:    base,
+		Layers:  layers,
+		fs:      &afero.Afero{Fs: fs},
+		marshal: yaml.Marshal,
 	}
 }
 
@@ -165,7 +166,7 @@ func (c *Compose) Run() (string, error) {
 		b = mergeMapsWithStrategy(b, l, strategy, nil)
 	}
 
-	out, err := yamlMarshal(b)
+	out, err := c.marshal(b)
 	if err != nil {
 		return "", fmt.Errorf("failed to marshal compose file: %s", err)
 	}
