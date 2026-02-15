@@ -44,10 +44,11 @@ func NewLayerComparator(layers []string) func(i, j int) bool {
 }
 
 type Compose struct {
-	Base    string
-	Layers  []string
-	fs      *afero.Afero
-	marshal marshalFunc
+	Base             string
+	Layers           []string
+	ExtractLayerPath string
+	fs               *afero.Afero
+	marshal          marshalFunc
 }
 
 type mapMergeStrategy string
