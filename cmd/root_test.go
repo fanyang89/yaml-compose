@@ -1,6 +1,8 @@
 package cmd
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -8,7 +10,25 @@ import (
 
 func TestRootCmd(t *testing.T) {
 	require := require.New(t)
-	rootCmd.SetArgs([]string{"a.yaml"})
-	err := rootCmd.Execute()
+
+	tmpDir := t.TempDir()
+	base := filepath.Join(tmpDir, "a.yaml")
+	baseDir := base + ".d"
+	out := filepath.Join(tmpDir, "out.yaml")
+
+	err := os.WriteFile(base, []byte("service: base\n"), 0644)
 	require.NoError(err)
+	err = os.MkdirAll(baseDir, 0755)
+	require.NoError(err)
+	err = os.WriteFile(filepath.Join(baseDir, "1-layer.yaml"), []byte("service: layer\n"), 0644)
+	require.NoError(err)
+
+	flagOutput = ""
+	rootCmd.SetArgs([]string{base, "-o", out})
+	err = rootCmd.Execute()
+	require.NoError(err)
+
+	b, err := os.ReadFile(out)
+	require.NoError(err)
+	require.Contains(string(b), "service: layer")
 }
