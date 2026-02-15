@@ -6,7 +6,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
-	"gopkg.in/yaml.v2"
+	"gopkg.in/yaml.v3"
 
 	"github.com/fanyang89/yaml-compose/v1/compose"
 )
@@ -76,7 +76,7 @@ func TestCompose(t *testing.T) {
 	r, err := c.Run()
 	require.NoError(err)
 
-	var got map[interface{}]interface{}
+	var got map[string]interface{}
 	err = yaml.Unmarshal([]byte(r), &got)
 	require.NoError(err)
 	require.Equal(false, got["xmas"])
@@ -117,12 +117,12 @@ feature: null
 	out, err := c.Run()
 	require.NoError(err)
 
-	var got map[interface{}]interface{}
+	var got map[string]interface{}
 	err = yaml.Unmarshal([]byte(out), &got)
 	require.NoError(err)
 
-	app := got["app"].(map[interface{}]interface{})
-	db := app["db"].(map[interface{}]interface{})
+	app := got["app"].(map[string]interface{})
+	db := app["db"].(map[string]interface{})
 	require.Equal("layer", db["host"])
 	require.Equal(10, db["pool"])
 	require.Equal([]interface{}{5433}, db["ports"])

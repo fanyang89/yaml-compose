@@ -7,7 +7,7 @@ import (
 	"strings"
 
 	"github.com/spf13/afero"
-	"gopkg.in/yaml.v2"
+	"gopkg.in/yaml.v3"
 )
 
 func NewLayerComparator(layers []string) func(i, j int) bool {
@@ -69,7 +69,7 @@ func (c *Compose) Run() (string, error) {
 		return "", fmt.Errorf("failed to read base compose file: %s", err)
 	}
 
-	var b map[interface{}]interface{}
+	var b map[string]interface{}
 	err = yaml.Unmarshal(in, &b)
 	if err != nil {
 		return "", fmt.Errorf("failed to parse base compose file: %s", err)
@@ -81,7 +81,7 @@ func (c *Compose) Run() (string, error) {
 			return "", fmt.Errorf("failed to read layer compose file: %s", err)
 		}
 
-		var l map[interface{}]interface{}
+		var l map[string]interface{}
 		err = yaml.Unmarshal(in, &l)
 		if err != nil {
 			return "", fmt.Errorf("failed to parse layer compose file: %s", err)
@@ -117,9 +117,9 @@ func validateLayerName(layer string) error {
 	return nil
 }
 
-func mergeMaps(base map[interface{}]interface{}, layer map[interface{}]interface{}) map[interface{}]interface{} {
+func mergeMaps(base map[string]interface{}, layer map[string]interface{}) map[string]interface{} {
 	if base == nil {
-		base = map[interface{}]interface{}{}
+		base = map[string]interface{}{}
 	}
 
 	for k, v := range layer {
@@ -135,8 +135,8 @@ func mergeMaps(base map[interface{}]interface{}, layer map[interface{}]interface
 }
 
 func mergeValue(base interface{}, layer interface{}) interface{} {
-	baseMap, baseIsMap := base.(map[interface{}]interface{})
-	layerMap, layerIsMap := layer.(map[interface{}]interface{})
+	baseMap, baseIsMap := base.(map[string]interface{})
+	layerMap, layerIsMap := layer.(map[string]interface{})
 	if baseIsMap && layerIsMap {
 		return mergeMaps(baseMap, layerMap)
 	}
