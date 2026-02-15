@@ -56,6 +56,12 @@ func (c *Compose) GetFilesystem() *afero.Afero {
 }
 
 func (c *Compose) Run() (string, error) {
+	for _, layer := range c.Layers {
+		if err := validateLayerName(layer); err != nil {
+			return "", err
+		}
+	}
+
 	sort.SliceStable(c.Layers, NewLayerComparator(c.Layers))
 
 	in, err := c.fs.ReadFile(c.Base)
@@ -81,9 +87,7 @@ func (c *Compose) Run() (string, error) {
 			return "", fmt.Errorf("failed to parse layer compose file: %s", err)
 		}
 
-		for k, v := range l {
-			b[k] = v
-		}
+		b = mergeMaps(b, l)
 	}
 
 	out, err := yaml.Marshal(b)
@@ -95,9 +99,47 @@ func (c *Compose) Run() (string, error) {
 }
 
 func part(s string) (string, string) {
-	p := strings.IndexRune(s, '-')
-	if p == -1 {
-		panic(fmt.Sprintf("invalid argument s: %s", s))
+	left, right, ok := strings.Cut(s, "-")
+	if !ok {
+		return s, ""
 	}
-	return s[:p], s[p+1:]
+	return left, right
+}
+
+func validateLayerName(layer string) error {
+	prefix, _, ok := strings.Cut(layer, "-")
+	if !ok || prefix == "" {
+		return fmt.Errorf("invalid layer file name %q: expected <order>-<name>.yaml", layer)
+	}
+	if _, err := strconv.Atoi(prefix); err != nil {
+		return fmt.Errorf("invalid layer file name %q: expected numeric order prefix", layer)
+	}
+	return nil
+}
+
+func mergeMaps(base map[interface{}]interface{}, layer map[interface{}]interface{}) map[interface{}]interface{} {
+	if base == nil {
+		base = map[interface{}]interface{}{}
+	}
+
+	for k, v := range layer {
+		existing, ok := base[k]
+		if !ok {
+			base[k] = v
+			continue
+		}
+		base[k] = mergeValue(existing, v)
+	}
+
+	return base
+}
+
+func mergeValue(base interface{}, layer interface{}) interface{} {
+	baseMap, baseIsMap := base.(map[interface{}]interface{})
+	layerMap, layerIsMap := layer.(map[interface{}]interface{})
+	if baseIsMap && layerIsMap {
+		return mergeMaps(baseMap, layerMap)
+	}
+
+	return layer
 }
