@@ -6,8 +6,10 @@ import (
 	"os"
 )
 
+var stat = os.Stat
+
 func FileExists(f string) (bool, error) {
-	_, err := os.Stat(f)
+	_, err := stat(f)
 	if err == nil {
 		return true, nil
 	}
@@ -18,7 +20,7 @@ func FileExists(f string) (bool, error) {
 }
 
 func DirExists(p string) (bool, error) {
-	s, err := os.Stat(p)
+	s, err := stat(p)
 	if err == nil {
 		if s.IsDir() {
 			return true, nil
