@@ -6,9 +6,10 @@
 
 - Input base file: `base.yaml`
 - Layer directory: `base.yaml.d/`
-- Layer file pattern: `*.yaml` / `*.yml`
+- Layer file pattern: `<order>-<name>.yaml` / `<order>-<name>.yml`
 - Apply order: sort by numeric prefix in file name, then by name
   - Example: `1-default.yaml`, `10-prod.yaml`
+  - Note: layer file names must include a numeric prefix (for example, `1-...`).
 
 ## Merge semantics
 
@@ -25,6 +26,7 @@ Layer files can optionally use two YAML documents separated by `---`:
 2. data document (actual layer values)
 
 When only one YAML document is present, it is treated as data (backward compatible).
+At most two YAML documents are supported.
 
 Supported strategies:
 
