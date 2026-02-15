@@ -33,9 +33,10 @@ func NewLayerComparator(layers []string) func(i, j int) bool {
 }
 
 type Compose struct {
-	Base   string
-	Layers []string
-	fs     *afero.Afero
+	Base             string
+	Layers           []string
+	ExtractLayerPath string
+	fs               *afero.Afero
 }
 
 type mapMergeStrategy string
@@ -109,6 +110,15 @@ func (c *Compose) Run() (string, error) {
 		}
 	}
 
+	var extractLayerParts []string
+	if c.ExtractLayerPath != "" {
+		parts, err := splitDotPath(c.ExtractLayerPath)
+		if err != nil {
+			return "", fmt.Errorf("invalid extract layer path %q: %w", c.ExtractLayerPath, err)
+		}
+		extractLayerParts = parts
+	}
+
 	sort.SliceStable(c.Layers, NewLayerComparator(c.Layers))
 
 	in, err := c.fs.ReadFile(c.Base)
@@ -131,6 +141,14 @@ func (c *Compose) Run() (string, error) {
 		l, strategy, err := parseLayer(in)
 		if err != nil {
 			return "", fmt.Errorf("failed to parse layer compose file: %s", err)
+		}
+
+		if len(extractLayerParts) > 0 {
+			extracted, ok := extractLayerAtPath(l, extractLayerParts)
+			if !ok {
+				continue
+			}
+			l = extracted
 		}
 
 		b = mergeMapsWithStrategy(b, l, strategy, nil)
@@ -374,6 +392,36 @@ func appendPath(path []string, key string) []string {
 	copy(next, path)
 	next[len(path)] = key
 	return next
+}
+
+func extractLayerAtPath(layer map[string]interface{}, path []string) (map[string]interface{}, bool) {
+	if len(path) == 0 {
+		return layer, true
+	}
+
+	var cur interface{} = layer
+	for _, segment := range path {
+		m, ok := cur.(map[string]interface{})
+		if !ok {
+			return nil, false
+		}
+		next, ok := m[segment]
+		if !ok {
+			return nil, false
+		}
+		cur = next
+	}
+
+	ret := cur
+	for i := len(path) - 1; i >= 0; i-- {
+		ret = map[string]interface{}{path[i]: ret}
+	}
+
+	wrapped, ok := ret.(map[string]interface{})
+	if !ok {
+		return nil, false
+	}
+	return wrapped, true
 }
 
 func normalizeDotPath(path string) (string, error) {

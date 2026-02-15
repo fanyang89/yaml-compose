@@ -32,6 +32,7 @@ func TestRootCmd(t *testing.T) {
 	out := filepath.Join(tmpDir, "out.yaml")
 
 	flagOutput = ""
+	flagExtractLayer = ""
 	rootCmd.SetArgs([]string{base, "-o", out})
 	err := rootCmd.Execute()
 	require.NoError(err)
@@ -46,6 +47,7 @@ func TestRootCmdFailsWhenBaseMissing(t *testing.T) {
 
 	base := filepath.Join(t.TempDir(), "missing.yaml")
 	flagOutput = ""
+	flagExtractLayer = ""
 	rootCmd.SetArgs([]string{base})
 	err := rootCmd.Execute()
 	require.Error(err)
@@ -63,8 +65,48 @@ func TestRootCmdFailsWhenLayerPathIsFile(t *testing.T) {
 	require.NoError(err)
 
 	flagOutput = ""
+	flagExtractLayer = ""
 	rootCmd.SetArgs([]string{base})
 	err = rootCmd.Execute()
 	require.Error(err)
 	require.Contains(err.Error(), "not a directory")
+}
+
+func TestRootCmdExtractLayer(t *testing.T) {
+	require := require.New(t)
+
+	tmpDir := t.TempDir()
+	base := filepath.Join(tmpDir, "a.yaml")
+	baseDir := base + ".d"
+	out := filepath.Join(tmpDir, "out.yaml")
+
+	err := os.WriteFile(base, []byte(`app:
+  db:
+    host: base
+    pool: 10
+keep: true
+`), 0644)
+	require.NoError(err)
+	err = os.MkdirAll(baseDir, 0755)
+	require.NoError(err)
+	err = os.WriteFile(filepath.Join(baseDir, "1-layer.yaml"), []byte(`app:
+  db:
+    host: layer
+unrelated: x
+`), 0644)
+	require.NoError(err)
+
+	flagOutput = ""
+	flagExtractLayer = ""
+	rootCmd.SetArgs([]string{base, "-e", "app.db", "-o", out})
+	err = rootCmd.Execute()
+	require.NoError(err)
+
+	b, err := os.ReadFile(out)
+	require.NoError(err)
+	content := string(b)
+	require.Contains(content, "host: layer")
+	require.Contains(content, "pool: 10")
+	require.Contains(content, "keep: true")
+	require.NotContains(content, "unrelated")
 }

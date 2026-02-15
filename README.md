@@ -56,11 +56,22 @@ Path rules:
 ```bash
 yaml-compose base.yaml
 yaml-compose base.yaml -o out.yaml
+yaml-compose base.yaml -e app.db
 ```
 
 Options:
 
 - `-o, --output`: write result to a file (otherwise prints to stdout)
+- `-e, --extract-layer`: extract a field path from each layer before compose (dot path, supports `\.` escape)
+
+When `--extract-layer` is set, each layer file is treated as a large YAML source, and only the extracted field is used as layer payload. The extracted value is wrapped back to its original path before merge.
+
+Example (`--extract-layer app.db`):
+
+- Layer input has `app.db`
+- Effective layer payload becomes only `app: { db: ... }`
+- Other keys in that layer are ignored
+- If a layer does not contain that path, it is skipped
 
 ## Example
 
