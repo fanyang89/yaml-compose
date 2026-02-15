@@ -56,15 +56,15 @@ func TestMergeMapsWithNilBase(t *testing.T) {
 func TestRunReturnsMarshalError(t *testing.T) {
 	require := require.New(t)
 
-	originalMarshal := yamlMarshal
-	yamlMarshal = func(in interface{}) ([]byte, error) {
+	c := NewMock("base.yaml", nil)
+	originalMarshal := c.marshal
+	c.marshal = func(in interface{}) ([]byte, error) {
 		return nil, errors.New("marshal failed")
 	}
 	t.Cleanup(func() {
-		yamlMarshal = originalMarshal
+		c.marshal = originalMarshal
 	})
 
-	c := NewMock("base.yaml", nil)
 	fs := c.GetFilesystem()
 	err := fs.WriteFile("base.yaml", []byte("service: base\n"), 0755)
 	require.NoError(err)

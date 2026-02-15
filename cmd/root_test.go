@@ -7,29 +7,16 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/require"
 )
 
-func setupRootCmdDeps(t *testing.T) {
-	t.Helper()
+type fakeComposer struct {
+	run func() (string, error)
+}
 
-	originalFileExists := fileExists
-	originalDirExists := dirExists
-	originalReadDir := readDir
-	originalMkdirAll := mkdirAll
-	originalWriteFile := writeFile
-	originalPrintLine := printLine
-
-	t.Cleanup(func() {
-		fileExists = originalFileExists
-		dirExists = originalDirExists
-		readDir = originalReadDir
-		mkdirAll = originalMkdirAll
-		writeFile = originalWriteFile
-		printLine = originalPrintLine
-		flagOutput = ""
-		rootCmd.SetArgs(nil)
-	})
+func (f fakeComposer) Run() (string, error) {
+	return f.run()
 }
 
 func writeRootCmdTestFiles(t *testing.T) (string, string) {
@@ -49,15 +36,23 @@ func writeRootCmdTestFiles(t *testing.T) (string, string) {
 	return tmpDir, base
 }
 
+func newTestRootCmd(overrides func(*commandDeps)) *cobra.Command {
+	deps := defaultCommandDeps()
+	if overrides != nil {
+		overrides(&deps)
+	}
+	return newRootCmd(deps)
+}
+
 func TestRootCmdWritesOutputFile(t *testing.T) {
-	setupRootCmdDeps(t)
 	require := require.New(t)
 
 	tmpDir, base := writeRootCmdTestFiles(t)
 	out := filepath.Join(tmpDir, "out.yaml")
 
-	rootCmd.SetArgs([]string{base, "-o", out})
-	err := rootCmd.Execute()
+	cmd := newTestRootCmd(nil)
+	cmd.SetArgs([]string{base, "-o", out})
+	err := cmd.Execute()
 	require.NoError(err)
 
 	b, err := os.ReadFile(out)
@@ -66,65 +61,66 @@ func TestRootCmdWritesOutputFile(t *testing.T) {
 }
 
 func TestRootCmdPrintsWhenOutputFlagMissing(t *testing.T) {
-	setupRootCmdDeps(t)
 	require := require.New(t)
 
 	_, base := writeRootCmdTestFiles(t)
 	printed := ""
-	printLine = func(args ...interface{}) (int, error) {
-		printed = fmt.Sprint(args...)
-		return len(printed), nil
-	}
+	cmd := newTestRootCmd(func(deps *commandDeps) {
+		deps.printLine = func(args ...interface{}) (int, error) {
+			printed = fmt.Sprint(args...)
+			return len(printed), nil
+		}
+	})
 
-	rootCmd.SetArgs([]string{base})
-	err := rootCmd.Execute()
+	cmd.SetArgs([]string{base})
+	err := cmd.Execute()
 	require.NoError(err)
 	require.Contains(printed, "service: layer")
 }
 
 func TestRootCmdFailsWhenBaseMissing(t *testing.T) {
-	setupRootCmdDeps(t)
 	require := require.New(t)
 
 	base := filepath.Join(t.TempDir(), "missing.yaml")
-	rootCmd.SetArgs([]string{base})
-	err := rootCmd.Execute()
+	cmd := newTestRootCmd(nil)
+	cmd.SetArgs([]string{base})
+	err := cmd.Execute()
 	require.Error(err)
 	require.Contains(err.Error(), "not found")
 }
 
 func TestRootCmdFailsWhenBaseCheckFails(t *testing.T) {
-	setupRootCmdDeps(t)
 	require := require.New(t)
 
-	fileExists = func(string) (bool, error) {
-		return false, errors.New("stat failed")
-	}
+	cmd := newTestRootCmd(func(deps *commandDeps) {
+		deps.fileExists = func(string) (bool, error) {
+			return false, errors.New("stat failed")
+		}
+	})
 
-	rootCmd.SetArgs([]string{"base.yaml"})
-	err := rootCmd.Execute()
+	cmd.SetArgs([]string{"base.yaml"})
+	err := cmd.Execute()
 	require.Error(err)
 	require.Contains(err.Error(), "check base file")
 	require.Contains(err.Error(), "stat failed")
 }
 
 func TestRootCmdFailsWhenLayerDirMissing(t *testing.T) {
-	setupRootCmdDeps(t)
 	require := require.New(t)
 
 	base := filepath.Join(t.TempDir(), "a.yaml")
 	err := os.WriteFile(base, []byte("service: base\n"), 0644)
 	require.NoError(err)
 
-	rootCmd.SetArgs([]string{base})
-	err = rootCmd.Execute()
+	cmd := newTestRootCmd(nil)
+	cmd.SetArgs([]string{base})
+	err = cmd.Execute()
 	require.Error(err)
 	require.Contains(err.Error(), "not found")
 	require.Contains(err.Error(), base+".d")
 }
 
 func TestRootCmdFailsWhenLayerPathIsFile(t *testing.T) {
-	setupRootCmdDeps(t)
 	require := require.New(t)
 
 	tmpDir := t.TempDir()
@@ -134,36 +130,37 @@ func TestRootCmdFailsWhenLayerPathIsFile(t *testing.T) {
 	err = os.WriteFile(base+".d", []byte("not a dir\n"), 0644)
 	require.NoError(err)
 
-	rootCmd.SetArgs([]string{base})
-	err = rootCmd.Execute()
+	cmd := newTestRootCmd(nil)
+	cmd.SetArgs([]string{base})
+	err = cmd.Execute()
 	require.Error(err)
 	require.Contains(err.Error(), "check layer directory")
 	require.Contains(err.Error(), "not a directory")
 }
 
 func TestRootCmdFailsWhenReadLayerDirectoryFails(t *testing.T) {
-	setupRootCmdDeps(t)
 	require := require.New(t)
 
 	base := filepath.Join(t.TempDir(), "a.yaml")
 	err := os.WriteFile(base, []byte("service: base\n"), 0644)
 	require.NoError(err)
-	dirExists = func(string) (bool, error) {
-		return true, nil
-	}
-	readDir = func(string) ([]os.DirEntry, error) {
-		return nil, errors.New("read failed")
-	}
+	cmd := newTestRootCmd(func(deps *commandDeps) {
+		deps.dirExists = func(string) (bool, error) {
+			return true, nil
+		}
+		deps.readDir = func(string) ([]os.DirEntry, error) {
+			return nil, errors.New("read failed")
+		}
+	})
 
-	rootCmd.SetArgs([]string{base})
-	err = rootCmd.Execute()
+	cmd.SetArgs([]string{base})
+	err = cmd.Execute()
 	require.Error(err)
 	require.Contains(err.Error(), "read layer directory")
 	require.Contains(err.Error(), "read failed")
 }
 
 func TestRootCmdIncludesYAMLAndYMLExtensionsOnly(t *testing.T) {
-	setupRootCmdDeps(t)
 	require := require.New(t)
 
 	tmpDir := t.TempDir()
@@ -181,8 +178,9 @@ func TestRootCmdIncludesYAMLAndYMLExtensionsOnly(t *testing.T) {
 	require.NoError(err)
 
 	out := filepath.Join(tmpDir, "out.yaml")
-	rootCmd.SetArgs([]string{base, "-o", out})
-	err = rootCmd.Execute()
+	cmd := newTestRootCmd(nil)
+	cmd.SetArgs([]string{base, "-o", out})
+	err = cmd.Execute()
 	require.NoError(err)
 
 	b, err := os.ReadFile(out)
@@ -192,125 +190,127 @@ func TestRootCmdIncludesYAMLAndYMLExtensionsOnly(t *testing.T) {
 }
 
 func TestRootCmdFailsWhenComposeFails(t *testing.T) {
-	setupRootCmdDeps(t)
 	require := require.New(t)
 
-	tmpDir := t.TempDir()
-	base := filepath.Join(tmpDir, "a.yaml")
-	baseDir := base + ".d"
+	base := filepath.Join(t.TempDir(), "a.yaml")
 	err := os.WriteFile(base, []byte("service: base\n"), 0644)
 	require.NoError(err)
-	err = os.MkdirAll(baseDir, 0755)
-	require.NoError(err)
-	err = os.WriteFile(filepath.Join(baseDir, "bad.yaml"), []byte("service: layer\n"), 0644)
-	require.NoError(err)
+	cmd := newTestRootCmd(func(deps *commandDeps) {
+		deps.dirExists = func(string) (bool, error) {
+			return true, nil
+		}
+		deps.readDir = func(string) ([]os.DirEntry, error) {
+			return []os.DirEntry{}, nil
+		}
+		deps.newCompose = func(string, []string) composeRunner {
+			return fakeComposer{run: func() (string, error) {
+				return "", errors.New("compose failed")
+			}}
+		}
+	})
 
-	rootCmd.SetArgs([]string{base})
-	err = rootCmd.Execute()
+	cmd.SetArgs([]string{base})
+	err = cmd.Execute()
 	require.Error(err)
 	require.Contains(err.Error(), "compose files")
-	require.Contains(err.Error(), "invalid layer file name")
+	require.Contains(err.Error(), "compose failed")
 }
 
 func TestRootCmdFailsWhenCreateOutputDirectoryFails(t *testing.T) {
-	setupRootCmdDeps(t)
 	require := require.New(t)
 
 	tmpDir, base := writeRootCmdTestFiles(t)
-	mkdirAll = func(string, os.FileMode) error {
-		return errors.New("mkdir failed")
-	}
 	out := filepath.Join(tmpDir, "nested", "out.yaml")
+	cmd := newTestRootCmd(func(deps *commandDeps) {
+		deps.mkdirAll = func(string, os.FileMode) error {
+			return errors.New("mkdir failed")
+		}
+	})
 
-	rootCmd.SetArgs([]string{base, "-o", out})
-	err := rootCmd.Execute()
+	cmd.SetArgs([]string{base, "-o", out})
+	err := cmd.Execute()
 	require.Error(err)
 	require.Contains(err.Error(), "create output directory")
 	require.Contains(err.Error(), "mkdir failed")
 }
 
 func TestRootCmdFailsWhenWriteOutputFails(t *testing.T) {
-	setupRootCmdDeps(t)
 	require := require.New(t)
 
 	tmpDir, base := writeRootCmdTestFiles(t)
-	writeFile = func(string, []byte, os.FileMode) error {
-		return errors.New("write failed")
-	}
-
 	out := filepath.Join(tmpDir, "out.yaml")
-	rootCmd.SetArgs([]string{base, "-o", out})
-	err := rootCmd.Execute()
+	cmd := newTestRootCmd(func(deps *commandDeps) {
+		deps.writeFile = func(string, []byte, os.FileMode) error {
+			return errors.New("write failed")
+		}
+	})
+
+	cmd.SetArgs([]string{base, "-o", out})
+	err := cmd.Execute()
 	require.Error(err)
 	require.Contains(err.Error(), "write output file")
 	require.Contains(err.Error(), "write failed")
 }
 
-func TestExecute(t *testing.T) {
-	setupRootCmdDeps(t)
+func TestCollectLayerFilenames(t *testing.T) {
 	require := require.New(t)
 
-	originalExecuteRootCmd := executeRootCmd
-	originalExitProcess := exitProcess
-	t.Cleanup(func() {
-		executeRootCmd = originalExecuteRootCmd
-		exitProcess = originalExitProcess
-	})
+	tmpDir := t.TempDir()
+	err := os.WriteFile(filepath.Join(tmpDir, "1-a.yaml"), []byte("a: 1\n"), 0644)
+	require.NoError(err)
+	err = os.WriteFile(filepath.Join(tmpDir, "2-b.yml"), []byte("b: 2\n"), 0644)
+	require.NoError(err)
+	err = os.WriteFile(filepath.Join(tmpDir, "3-c.txt"), []byte("c: 3\n"), 0644)
+	require.NoError(err)
+
+	entries, err := os.ReadDir(tmpDir)
+	require.NoError(err)
+	layers := collectLayerFilenames(entries)
+	require.ElementsMatch([]string{"1-a.yaml", "2-b.yml"}, layers)
+}
+
+func TestExecuteRunsCommandExecutor(t *testing.T) {
+	require := require.New(t)
 
 	called := false
-	executeRootCmd = func() error {
+	execute(func() error {
 		called = true
 		return nil
-	}
-	exitProcess = func(int) {
-		require.Fail("exitProcess should not be called on success")
-	}
+	}, func(int) {
+		require.Fail("exit should not be called")
+	})
 
-	Execute()
 	require.True(called)
 }
 
-func TestExecuteUsesDefaultRootCommandExecutor(t *testing.T) {
-	setupRootCmdDeps(t)
+func TestExecuteCallsExitOnError(t *testing.T) {
 	require := require.New(t)
 
-	originalExitProcess := exitProcess
+	exitCode := -1
+	execute(func() error {
+		return errors.New("boom")
+	}, func(code int) {
+		exitCode = code
+	})
+
+	require.Equal(1, exitCode)
+}
+
+func TestExecuteUsesRootCommand(t *testing.T) {
+	require := require.New(t)
+
+	originalRootCmd := rootCmd
 	t.Cleanup(func() {
-		exitProcess = originalExitProcess
+		rootCmd = originalRootCmd
 	})
 
 	tmpDir, base := writeRootCmdTestFiles(t)
 	out := filepath.Join(tmpDir, "out.yaml")
+	rootCmd = newRootCmd(defaultCommandDeps())
 	rootCmd.SetArgs([]string{base, "-o", out})
-	exitProcess = func(int) {
-		require.Fail("exitProcess should not be called on success")
-	}
 
 	Execute()
 	b, err := os.ReadFile(out)
 	require.NoError(err)
 	require.Contains(string(b), "service: layer")
-}
-
-func TestExecuteExitsOnError(t *testing.T) {
-	setupRootCmdDeps(t)
-	require := require.New(t)
-
-	originalExecuteRootCmd := executeRootCmd
-	originalExitProcess := exitProcess
-	t.Cleanup(func() {
-		executeRootCmd = originalExecuteRootCmd
-		exitProcess = originalExitProcess
-	})
-
-	executeRootCmd = func() error {
-		return errors.New("boom")
-	}
-	exitCode := -1
-	exitProcess = func(code int) {
-		exitCode = code
-	}
-
-	Execute()
-	require.Equal(1, exitCode)
 }
