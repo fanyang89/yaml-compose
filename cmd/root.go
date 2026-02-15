@@ -2,10 +2,12 @@ package cmd
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
 
+	"github.com/spf13/afero"
 	"github.com/spf13/cobra"
 
 	"github.com/fanyang89/yaml-compose/v1/compose"
@@ -17,25 +19,17 @@ type composeRunner interface {
 }
 
 type commandDeps struct {
-	fileExists func(string) (bool, error)
-	dirExists  func(string) (bool, error)
-	readDir    func(string) ([]os.DirEntry, error)
-	mkdirAll   func(string, os.FileMode) error
-	writeFile  func(string, []byte, os.FileMode) error
-	printLine  func(...interface{}) (int, error)
-	newCompose func(string, []string) composeRunner
+	fs         afero.Fs
+	stdout     io.Writer
+	newCompose func(string, []string, afero.Fs) composeRunner
 }
 
 func defaultCommandDeps() commandDeps {
 	return commandDeps{
-		fileExists: fsutils.FileExists,
-		dirExists:  fsutils.DirExists,
-		readDir:    os.ReadDir,
-		mkdirAll:   os.MkdirAll,
-		writeFile:  os.WriteFile,
-		printLine:  fmt.Println,
-		newCompose: func(base string, layers []string) composeRunner {
-			return compose.New(base, layers)
+		fs:     afero.NewOsFs(),
+		stdout: os.Stdout,
+		newCompose: func(base string, layers []string, fs afero.Fs) composeRunner {
+			return compose.NewWithFs(base, layers, fs)
 		},
 	}
 }
@@ -55,7 +49,7 @@ func newRootCmd(deps commandDeps) *cobra.Command {
 }
 
 func runRootCommand(base, output string, deps commandDeps) error {
-	exists, err := deps.fileExists(base)
+	exists, err := fsutils.FileExistsOn(deps.fs, base)
 	if err != nil {
 		return fmt.Errorf("check base file: %w", err)
 	}
@@ -64,7 +58,7 @@ func runRootCommand(base, output string, deps commandDeps) error {
 	}
 
 	baseDir := base + ".d"
-	exists, err = deps.dirExists(baseDir)
+	exists, err = fsutils.DirExistsOn(deps.fs, baseDir)
 	if err != nil {
 		return fmt.Errorf("check layer directory: %w", err)
 	}
@@ -72,13 +66,13 @@ func runRootCommand(base, output string, deps commandDeps) error {
 		return fmt.Errorf("%s not found", baseDir)
 	}
 
-	layerInfos, err := deps.readDir(baseDir)
+	layerInfos, err := afero.ReadDir(deps.fs, baseDir)
 	if err != nil {
 		return fmt.Errorf("read layer directory: %w", err)
 	}
 	layers := collectLayerFilenames(layerInfos)
 
-	c := deps.newCompose(base, layers)
+	c := deps.newCompose(base, layers, deps.fs)
 	ret, err := c.Run()
 	if err != nil {
 		return fmt.Errorf("compose files: %w", err)
@@ -86,21 +80,23 @@ func runRootCommand(base, output string, deps commandDeps) error {
 
 	if output != "" {
 		outputBaseDir := filepath.Dir(output)
-		if err := deps.mkdirAll(outputBaseDir, 0755); err != nil {
+		if err := deps.fs.MkdirAll(outputBaseDir, 0755); err != nil {
 			return fmt.Errorf("create output directory: %w", err)
 		}
-		err = deps.writeFile(output, []byte(ret), 0644)
+		err = afero.WriteFile(deps.fs, output, []byte(ret), 0644)
 		if err != nil {
 			return fmt.Errorf("write output file: %w", err)
 		}
 		return nil
 	}
 
-	deps.printLine(ret)
+	if _, err := fmt.Fprintln(deps.stdout, ret); err != nil {
+		return fmt.Errorf("print output: %w", err)
+	}
 	return nil
 }
 
-func collectLayerFilenames(layerInfos []os.DirEntry) []string {
+func collectLayerFilenames(layerInfos []os.FileInfo) []string {
 	layers := make([]string, 0)
 	for _, info := range layerInfos {
 		if strings.HasSuffix(info.Name(), ".yaml") || strings.HasSuffix(info.Name(), ".yml") {
@@ -119,6 +115,8 @@ func execute(commandExecutor func() error, exit func(int)) {
 
 var rootCmd = newRootCmd(defaultCommandDeps())
 
+var osExit = os.Exit
+
 func Execute() {
-	execute(rootCmd.Execute, os.Exit)
+	execute(rootCmd.Execute, osExit)
 }

@@ -1,0 +1,19 @@
+version: "3"
+
+tasks:
+  build:
+    desc: Build yaml-compose binary
+    cmds:
+      - go build -o yaml-compose ./main.go
+
+  test:
+    desc: Run unit tests
+    cmds:
+      - go test ./...
+
+  install:
+    desc: Install yaml-compose
+    deps:
+      - build
+    cmds:
+      - go install .
