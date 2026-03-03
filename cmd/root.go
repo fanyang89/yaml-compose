@@ -16,11 +16,13 @@ import (
 
 type composeRunner interface {
 	Run() (string, error)
+	SetTransformLogWriter(io.Writer)
 }
 
 type commandDeps struct {
 	fs         afero.Fs
 	stdout     io.Writer
+	stderr     io.Writer
 	newCompose func(string, []string, afero.Fs) composeRunner
 }
 
@@ -28,6 +30,7 @@ func defaultCommandDeps() commandDeps {
 	return commandDeps{
 		fs:     afero.NewOsFs(),
 		stdout: os.Stdout,
+		stderr: os.Stderr,
 		newCompose: func(base string, layers []string, fs afero.Fs) composeRunner {
 			return compose.NewWithFs(base, layers, fs)
 		},
@@ -36,19 +39,21 @@ func defaultCommandDeps() commandDeps {
 
 func newRootCmd(deps commandDeps) *cobra.Command {
 	flagOutput := ""
+	flagLayer := ""
 	cmd := &cobra.Command{
 		Use:  "yaml-compose [YAML-FILE]",
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runRootCommand(args[0], flagOutput, deps)
+			return runRootCommand(args[0], flagOutput, flagLayer, deps)
 		},
 	}
 
 	cmd.Flags().StringVarP(&flagOutput, "output", "o", "", "config file")
+	cmd.Flags().StringVar(&flagLayer, "layer", "", "run only one layer file (for debugging)")
 	return cmd
 }
 
-func runRootCommand(base, output string, deps commandDeps) error {
+func runRootCommand(base, output, layer string, deps commandDeps) error {
 	exists, err := fsutils.FileExistsOn(deps.fs, base)
 	if err != nil {
 		return fmt.Errorf("check base file: %w", err)
@@ -71,8 +76,15 @@ func runRootCommand(base, output string, deps commandDeps) error {
 		return fmt.Errorf("read layer directory: %w", err)
 	}
 	layers := collectLayerFilenames(layerInfos)
+	if layer != "" {
+		layers, err = filterLayersByName(layers, layer)
+		if err != nil {
+			return err
+		}
+	}
 
 	c := deps.newCompose(base, layers, deps.fs)
+	c.SetTransformLogWriter(deps.stderr)
 	ret, err := c.Run()
 	if err != nil {
 		return fmt.Errorf("compose files: %w", err)
@@ -94,6 +106,15 @@ func runRootCommand(base, output string, deps commandDeps) error {
 		return fmt.Errorf("print output: %w", err)
 	}
 	return nil
+}
+
+func filterLayersByName(layers []string, target string) ([]string, error) {
+	for _, layer := range layers {
+		if layer == target {
+			return []string{layer}, nil
+		}
+	}
+	return nil, fmt.Errorf("layer %q not found", target)
 }
 
 func collectLayerFilenames(layerInfos []os.FileInfo) []string {

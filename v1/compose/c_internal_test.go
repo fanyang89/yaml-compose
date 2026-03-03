@@ -73,3 +73,44 @@ func TestRunReturnsMarshalError(t *testing.T) {
 	require.Error(err)
 	require.Contains(err.Error(), "failed to marshal compose file")
 }
+
+func TestSplitDotPathSupportsBracketArrayIndex(t *testing.T) {
+	require := require.New(t)
+
+	parts, err := splitDotPath("app.backends[0].names")
+	require.NoError(err)
+	require.Equal([]string{"app", "backends", "0", "names"}, parts)
+}
+
+func TestSplitDotPathReturnsErrorForInvalidBracketPath(t *testing.T) {
+	require := require.New(t)
+
+	_, err := splitDotPath("app.backends[a].names")
+	require.Error(err)
+	require.Contains(err.Error(), "invalid bracket path segment")
+}
+
+func TestSplitDotPathSupportsBracketObjectSelector(t *testing.T) {
+	require := require.New(t)
+
+	parts, err := splitDotPath("app.backends[name=api].names")
+	require.NoError(err)
+	require.Equal([]string{"app", "backends", "name=api", "names"}, parts)
+}
+
+func TestSplitDotPathSupportsQuotedBracketObjectSelector(t *testing.T) {
+	require := require.New(t)
+
+	parts, err := splitDotPath(`groups[name="abc 123"].ports`)
+	require.NoError(err)
+	require.Equal([]string{"groups", `name="abc 123"`, "ports"}, parts)
+}
+
+func TestParsePathSelectorSupportsQuotedStringValue(t *testing.T) {
+	require := require.New(t)
+
+	key, value, ok := parsePathSelector(`name="abc 123"`)
+	require.True(ok)
+	require.Equal("name", key)
+	require.Equal("abc 123", value)
+}

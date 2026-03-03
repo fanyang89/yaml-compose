@@ -27,6 +27,8 @@ func (f fakeComposer) Run() (string, error) {
 	return f.run()
 }
 
+func (f fakeComposer) SetTransformLogWriter(io.Writer) {}
+
 func setupComposeFiles(t *testing.T, fs afero.Fs) string {
 	t.Helper()
 
@@ -50,6 +52,7 @@ func newTestRootCmd(fs afero.Fs, stdout io.Writer, override func(*commandDeps)) 
 	deps := defaultCommandDeps()
 	deps.fs = fs
 	deps.stdout = stdout
+	deps.stderr = io.Discard
 	if override != nil {
 		override(&deps)
 	}
@@ -86,6 +89,43 @@ func TestRootCmdPrintsWhenOutputFlagMissing(t *testing.T) {
 	err := cmd.Execute()
 	require.NoError(err)
 	require.Contains(out.String(), "service: layer")
+}
+
+func TestRootCmdRunsOnlySpecifiedLayer(t *testing.T) {
+	require := require.New(t)
+	fs := afero.NewMemMapFs()
+
+	err := afero.WriteFile(fs, "/base.yaml", []byte("service: base\n"), 0644)
+	require.NoError(err)
+	err = fs.MkdirAll("/base.yaml.d", 0755)
+	require.NoError(err)
+	err = afero.WriteFile(fs, "/base.yaml.d/1-first.yaml", []byte("service: first\n"), 0644)
+	require.NoError(err)
+	err = afero.WriteFile(fs, "/base.yaml.d/2-second.yaml", []byte("service: second\n"), 0644)
+	require.NoError(err)
+
+	cmd := newTestRootCmd(fs, io.Discard, nil)
+	cmd.SetArgs([]string{"/base.yaml", "--layer", "1-first.yaml", "-o", "/out.yaml"})
+	err = cmd.Execute()
+	require.NoError(err)
+
+	b, err := afero.ReadFile(fs, "/out.yaml")
+	require.NoError(err)
+	content := string(b)
+	require.Contains(content, "service: first")
+	require.NotContains(content, "service: second")
+}
+
+func TestRootCmdFailsWhenSpecifiedLayerMissing(t *testing.T) {
+	require := require.New(t)
+	fs := afero.NewMemMapFs()
+	base := setupComposeFiles(t, fs)
+
+	cmd := newTestRootCmd(fs, io.Discard, nil)
+	cmd.SetArgs([]string{base, "--layer", "9-missing.yaml"})
+	err := cmd.Execute()
+	require.Error(err)
+	require.Contains(err.Error(), "layer \"9-missing.yaml\" not found")
 }
 
 func TestRootCmdFailsWhenPrintOutputFails(t *testing.T) {
@@ -257,6 +297,18 @@ func TestCollectLayerFilenames(t *testing.T) {
 	require.NoError(err)
 	layers := collectLayerFilenames(infos)
 	require.ElementsMatch([]string{"1-a.yaml", "2-b.yml"}, layers)
+}
+
+func TestFilterLayersByName(t *testing.T) {
+	require := require.New(t)
+
+	got, err := filterLayersByName([]string{"1-a.yaml", "2-b.yaml"}, "2-b.yaml")
+	require.NoError(err)
+	require.Equal([]string{"2-b.yaml"}, got)
+
+	_, err = filterLayersByName([]string{"1-a.yaml", "2-b.yaml"}, "3-c.yaml")
+	require.Error(err)
+	require.Contains(err.Error(), "not found")
 }
 
 func TestExecuteRunsCommandExecutor(t *testing.T) {

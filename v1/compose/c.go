@@ -52,6 +52,7 @@ type Compose struct {
 	Layers  []string
 	fs      *afero.Afero
 	marshal marshalFunc
+	logOut  io.Writer
 }
 
 type mapMergeStrategy string
@@ -80,8 +81,9 @@ var defaultMergeStrategy = mergeStrategy{
 }
 
 type layerMetadata struct {
-	Merge     mergeMetadata           `yaml:"merge"`
-	Transform *layerTransformMetadata `yaml:"transform"`
+	Merge      mergeMetadata            `yaml:"merge"`
+	Transform  *layerTransformMetadata  `yaml:"transform"`
+	Transforms []layerTransformMetadata `yaml:"transforms"`
 }
 
 type mergeMetadata struct {
@@ -100,13 +102,16 @@ type layerMergeStrategy struct {
 }
 
 type layerTransformMetadata struct {
-	Kind       string                  `yaml:"kind"`
-	Source     layerTransformSource    `yaml:"source"`
-	Target     layerTransformTarget    `yaml:"target"`
-	ListFilter layerListFilterMetadata `yaml:"list_filter"`
+	Kind        string                     `yaml:"kind"`
+	Source      layerTransformSource       `yaml:"source"`
+	Target      layerTransformTarget       `yaml:"target"`
+	ListFilter  layerListFilterMetadata    `yaml:"list_filter"`
+	ListExtract layerListExtractMetadata   `yaml:"list_extract"`
+	ReplaceVals layerReplaceValuesMetadata `yaml:"replace_values"`
 }
 
 type layerTransformSource struct {
+	From string `yaml:"from"`
 	File string `yaml:"file"`
 	Path string `yaml:"path"`
 }
@@ -122,11 +127,29 @@ type layerListFilterMetadata struct {
 	IncludeMode string   `yaml:"include_mode"`
 }
 
+type layerListExtractMetadata struct {
+	ExtractPath string   `yaml:"extract_path"`
+	Include     []string `yaml:"include"`
+	Exclude     []string `yaml:"exclude"`
+	IncludeMode string   `yaml:"include_mode"`
+}
+
+type layerReplaceValuesMetadata struct {
+	Old           string `yaml:"old"`
+	New           string `yaml:"new"`
+	Recursive     bool   `yaml:"recursive"`
+	PrintOriginal bool   `yaml:"print_original"`
+}
+
 type layerTransform struct {
-	sourceFile string
-	sourcePath []string
-	targetPath []string
-	listFilter layerListFilter
+	kind        string
+	sourceFrom  string
+	sourceFile  string
+	sourcePath  []string
+	targetPath  []string
+	listFilter  layerListFilter
+	listExtract layerListExtract
+	replaceVals layerReplaceValues
 }
 
 type layerListFilter struct {
@@ -136,9 +159,30 @@ type layerListFilter struct {
 	includeMode includeMode
 }
 
+type layerListExtract struct {
+	extractPath []string
+	include     []*regexp.Regexp
+	exclude     []*regexp.Regexp
+	includeMode includeMode
+}
+
+type layerReplaceValues struct {
+	old           string
+	new           string
+	recursive     bool
+	printOriginal bool
+}
+
 type includeMode string
 
 const (
+	transformKindListFilter  = "list_filter"
+	transformKindListExtract = "list_extract"
+	transformKindReplaceVals = "replace-values"
+
+	transformSourceFile  = "file"
+	transformSourceState = "state"
+
 	includeModeAny includeMode = "any"
 	includeModeAll includeMode = "all"
 )
@@ -157,6 +201,7 @@ func NewWithFs(base string, layers []string, fs afero.Fs) *Compose {
 		Layers:  layers,
 		fs:      &afero.Afero{Fs: fs},
 		marshal: marshalYAML,
+		logOut:  io.Discard,
 	}
 }
 
@@ -176,6 +221,14 @@ func marshalYAML(in interface{}) ([]byte, error) {
 
 func (c *Compose) GetFilesystem() *afero.Afero {
 	return c.fs
+}
+
+func (c *Compose) SetTransformLogWriter(w io.Writer) {
+	if w == nil {
+		c.logOut = io.Discard
+		return
+	}
+	c.logOut = w
 }
 
 func (c *Compose) Run() (string, error) {
@@ -204,13 +257,13 @@ func (c *Compose) Run() (string, error) {
 			return "", fmt.Errorf("failed to read layer compose file: %s", err)
 		}
 
-		l, strategy, transform, err := parseLayer(in)
+		l, strategy, transforms, err := parseLayer(in)
 		if err != nil {
 			return "", fmt.Errorf("failed to parse layer compose file: %s", err)
 		}
 
-		if transform != nil {
-			l, err = c.applyLayerTransform(l, transform)
+		for _, transform := range transforms {
+			l, err = c.applyLayerTransform(l, transform, b)
 			if err != nil {
 				return "", fmt.Errorf("failed to apply layer transform for %q: %w", layer, err)
 			}
@@ -301,7 +354,7 @@ func mergeValue(base interface{}, layer interface{}, strategy layerMergeStrategy
 	return layer
 }
 
-func parseLayer(in []byte) (map[string]interface{}, layerMergeStrategy, *layerTransform, error) {
+func parseLayer(in []byte) (map[string]interface{}, layerMergeStrategy, []layerTransform, error) {
 	docs, err := decodeYAMLDocuments(in)
 	if err != nil {
 		return nil, layerMergeStrategy{}, nil, err
@@ -325,7 +378,7 @@ func parseLayer(in []byte) (map[string]interface{}, layerMergeStrategy, *layerTr
 		if err != nil {
 			return nil, layerMergeStrategy{}, nil, err
 		}
-		transform, err := buildLayerTransform(meta)
+		transforms, err := buildLayerTransforms(meta)
 		if err != nil {
 			return nil, layerMergeStrategy{}, nil, err
 		}
@@ -333,59 +386,159 @@ func parseLayer(in []byte) (map[string]interface{}, layerMergeStrategy, *layerTr
 		if err != nil {
 			return nil, layerMergeStrategy{}, nil, err
 		}
-		return data, strategy, transform, nil
+		return data, strategy, transforms, nil
 	default:
 		return nil, layerMergeStrategy{}, nil, fmt.Errorf("expected at most two YAML documents (metadata and data), got %d", len(docs))
 	}
 }
 
-func buildLayerTransform(meta layerMetadata) (*layerTransform, error) {
-	if meta.Transform == nil {
+func buildLayerTransforms(meta layerMetadata) ([]layerTransform, error) {
+	if meta.Transform != nil && len(meta.Transforms) > 0 {
+		return nil, fmt.Errorf("cannot specify both transform and transforms")
+	}
+
+	if meta.Transform != nil {
+		transform, err := buildLayerTransform(*meta.Transform, "transform")
+		if err != nil {
+			return nil, err
+		}
+		return []layerTransform{transform}, nil
+	}
+
+	if len(meta.Transforms) == 0 {
 		return nil, nil
 	}
 
-	if meta.Transform.Kind != "list_filter" {
-		return nil, fmt.Errorf("invalid transform.kind %q: supported values: list_filter", meta.Transform.Kind)
+	transforms := make([]layerTransform, 0, len(meta.Transforms))
+	for i, transformMeta := range meta.Transforms {
+		fieldPrefix := fmt.Sprintf("transforms[%d]", i)
+		transform, err := buildLayerTransform(transformMeta, fieldPrefix)
+		if err != nil {
+			return nil, err
+		}
+		transforms = append(transforms, transform)
 	}
 
-	if meta.Transform.Source.File == "" {
-		return nil, fmt.Errorf("invalid transform.source.file: cannot be empty")
+	return transforms, nil
+}
+
+func buildLayerTransform(meta layerTransformMetadata, fieldPrefix string) (layerTransform, error) {
+	if meta.Kind != transformKindListFilter && meta.Kind != transformKindListExtract && meta.Kind != transformKindReplaceVals {
+		return layerTransform{}, fmt.Errorf("invalid %s.kind %q: supported values: list_filter, list_extract, replace-values", fieldPrefix, meta.Kind)
 	}
 
-	sourcePath, err := splitDotPath(meta.Transform.Source.Path)
+	sourceFrom := meta.Source.From
+	if sourceFrom == "" {
+		sourceFrom = transformSourceFile
+	}
+	if sourceFrom != transformSourceFile && sourceFrom != transformSourceState {
+		return layerTransform{}, fmt.Errorf("invalid %s.source.from %q: supported values: file, state", fieldPrefix, meta.Source.From)
+	}
+	if sourceFrom == transformSourceFile && meta.Source.File == "" {
+		return layerTransform{}, fmt.Errorf("invalid %s.source.file: cannot be empty when source.from=file", fieldPrefix)
+	}
+	if sourceFrom == transformSourceState && meta.Source.File != "" {
+		return layerTransform{}, fmt.Errorf("invalid %s.source.file: must be empty when source.from=state", fieldPrefix)
+	}
+
+	sourcePath, err := splitDotPath(meta.Source.Path)
 	if err != nil {
-		return nil, fmt.Errorf("invalid transform.source.path %q: %w", meta.Transform.Source.Path, err)
+		return layerTransform{}, fmt.Errorf("invalid %s.source.path %q: %w", fieldPrefix, meta.Source.Path, err)
 	}
 
-	targetPathRaw := meta.Transform.Target.Path
+	targetPathRaw := meta.Target.Path
 	if targetPathRaw == "" {
-		targetPathRaw = meta.Transform.Source.Path
+		targetPathRaw = meta.Source.Path
 	}
 	targetPath, err := splitDotPath(targetPathRaw)
 	if err != nil {
-		return nil, fmt.Errorf("invalid transform.target.path %q: %w", targetPathRaw, err)
+		return layerTransform{}, fmt.Errorf("invalid %s.target.path %q: %w", fieldPrefix, targetPathRaw, err)
 	}
 
-	filter, err := buildListFilter(meta.Transform.ListFilter)
-	if err != nil {
-		return nil, err
-	}
-
-	return &layerTransform{
-		sourceFile: meta.Transform.Source.File,
+	transform := layerTransform{
+		kind:       meta.Kind,
+		sourceFrom: sourceFrom,
+		sourceFile: meta.Source.File,
 		sourcePath: sourcePath,
 		targetPath: targetPath,
-		listFilter: filter,
+	}
+
+	switch meta.Kind {
+	case transformKindListFilter:
+		filter, err := buildListFilter(meta.ListFilter, fieldPrefix)
+		if err != nil {
+			return layerTransform{}, err
+		}
+		transform.listFilter = filter
+	case transformKindListExtract:
+		extract, err := buildListExtract(meta.ListExtract, fieldPrefix)
+		if err != nil {
+			return layerTransform{}, err
+		}
+		transform.listExtract = extract
+	case transformKindReplaceVals:
+		replaceVals, err := buildReplaceValues(meta.ReplaceVals, fieldPrefix)
+		if err != nil {
+			return layerTransform{}, err
+		}
+		transform.replaceVals = replaceVals
+	}
+
+	return transform, nil
+}
+
+func buildReplaceValues(meta layerReplaceValuesMetadata, fieldPrefix string) (layerReplaceValues, error) {
+	if meta.Old == "" {
+		return layerReplaceValues{}, fmt.Errorf("invalid %s.replace_values.old: cannot be empty", fieldPrefix)
+	}
+
+	return layerReplaceValues{
+		old:           meta.Old,
+		new:           meta.New,
+		recursive:     meta.Recursive,
+		printOriginal: meta.PrintOriginal,
 	}, nil
 }
 
-func buildListFilter(meta layerListFilterMetadata) (layerListFilter, error) {
-	includeRegex, err := compileRegexList(meta.Include, "transform.list_filter.include")
+func buildListExtract(meta layerListExtractMetadata, fieldPrefix string) (layerListExtract, error) {
+	extractPath, err := splitDotPath(meta.ExtractPath)
+	if err != nil {
+		return layerListExtract{}, fmt.Errorf("invalid %s.list_extract.extract_path %q: %w", fieldPrefix, meta.ExtractPath, err)
+	}
+
+	includeRegex, err := compileRegexList(meta.Include, fmt.Sprintf("%s.list_extract.include", fieldPrefix))
+	if err != nil {
+		return layerListExtract{}, err
+	}
+
+	excludeRegex, err := compileRegexList(meta.Exclude, fmt.Sprintf("%s.list_extract.exclude", fieldPrefix))
+	if err != nil {
+		return layerListExtract{}, err
+	}
+
+	mode := includeModeAny
+	if meta.IncludeMode != "" {
+		mode = includeMode(meta.IncludeMode)
+	}
+	if mode != includeModeAny && mode != includeModeAll {
+		return layerListExtract{}, fmt.Errorf("invalid %s.list_extract.include_mode %q: supported values: any, all", fieldPrefix, meta.IncludeMode)
+	}
+
+	return layerListExtract{
+		extractPath: extractPath,
+		include:     includeRegex,
+		exclude:     excludeRegex,
+		includeMode: mode,
+	}, nil
+}
+
+func buildListFilter(meta layerListFilterMetadata, fieldPrefix string) (layerListFilter, error) {
+	includeRegex, err := compileRegexList(meta.Include, fmt.Sprintf("%s.list_filter.include", fieldPrefix))
 	if err != nil {
 		return layerListFilter{}, err
 	}
 
-	excludeRegex, err := compileRegexList(meta.Exclude, "transform.list_filter.exclude")
+	excludeRegex, err := compileRegexList(meta.Exclude, fmt.Sprintf("%s.list_filter.exclude", fieldPrefix))
 	if err != nil {
 		return layerListFilter{}, err
 	}
@@ -395,14 +548,14 @@ func buildListFilter(meta layerListFilterMetadata) (layerListFilter, error) {
 		mode = includeMode(meta.IncludeMode)
 	}
 	if mode != includeModeAny && mode != includeModeAll {
-		return layerListFilter{}, fmt.Errorf("invalid transform.list_filter.include_mode %q: supported values: any, all", meta.IncludeMode)
+		return layerListFilter{}, fmt.Errorf("invalid %s.list_filter.include_mode %q: supported values: any, all", fieldPrefix, meta.IncludeMode)
 	}
 
 	var matchPath []string
 	if meta.MatchPath != "" {
 		matchPath, err = splitDotPath(meta.MatchPath)
 		if err != nil {
-			return layerListFilter{}, fmt.Errorf("invalid transform.list_filter.match_path %q: %w", meta.MatchPath, err)
+			return layerListFilter{}, fmt.Errorf("invalid %s.list_filter.match_path %q: %w", fieldPrefix, meta.MatchPath, err)
 		}
 	}
 
@@ -426,14 +579,23 @@ func compileRegexList(raw []string, fieldName string) ([]*regexp.Regexp, error) 
 	return out, nil
 }
 
-func (c *Compose) applyLayerTransform(layer map[string]interface{}, transform *layerTransform) (map[string]interface{}, error) {
+func (c *Compose) applyLayerTransform(layer map[string]interface{}, transform layerTransform, state map[string]interface{}) (map[string]interface{}, error) {
 	if layer == nil {
 		layer = map[string]interface{}{}
 	}
 
-	sourceData, err := c.readSourceYAML(transform.sourceFile)
-	if err != nil {
-		return nil, err
+	var sourceData interface{}
+	var err error
+	switch transform.sourceFrom {
+	case transformSourceState:
+		sourceData = state
+	case transformSourceFile:
+		sourceData, err = c.readSourceYAML(transform.sourceFile)
+		if err != nil {
+			return nil, err
+		}
+	default:
+		return nil, fmt.Errorf("unsupported transform source.from %q", transform.sourceFrom)
 	}
 
 	input, ok := getValueAtPath(sourceData, transform.sourcePath)
@@ -441,17 +603,41 @@ func (c *Compose) applyLayerTransform(layer map[string]interface{}, transform *l
 		return nil, fmt.Errorf("source path %q not found", normalizePath(transform.sourcePath))
 	}
 
-	inputList, ok := input.([]interface{})
-	if !ok {
-		return nil, fmt.Errorf("source path %q must resolve to a list", normalizePath(transform.sourcePath))
+	var output interface{}
+	switch transform.kind {
+	case transformKindListFilter:
+		inputList, ok := input.([]interface{})
+		if !ok {
+			return nil, fmt.Errorf("source path %q must resolve to a list", normalizePath(transform.sourcePath))
+		}
+		output, err = applyListFilter(inputList, transform.listFilter)
+		if err != nil {
+			return nil, err
+		}
+	case transformKindListExtract:
+		inputList, ok := input.([]interface{})
+		if !ok {
+			return nil, fmt.Errorf("source path %q must resolve to a list", normalizePath(transform.sourcePath))
+		}
+		output, err = applyListExtract(inputList, transform.listExtract)
+		if err != nil {
+			return nil, err
+		}
+	case transformKindReplaceVals:
+		var originals []string
+		output, originals = applyReplaceValues(input, transform.replaceVals)
+		if transform.replaceVals.printOriginal {
+			for _, original := range originals {
+				if _, werr := fmt.Fprintln(c.logOut, original); werr != nil {
+					return nil, fmt.Errorf("print replaced original value: %w", werr)
+				}
+			}
+		}
+	default:
+		return nil, fmt.Errorf("unsupported transform kind %q", transform.kind)
 	}
 
-	outputList, err := applyListFilter(inputList, transform.listFilter)
-	if err != nil {
-		return nil, err
-	}
-
-	if err := setMapValueAtPath(layer, transform.targetPath, outputList); err != nil {
+	if err := setMapValueAtPath(layer, transform.targetPath, output); err != nil {
 		return nil, err
 	}
 
@@ -495,6 +681,130 @@ func applyListFilter(input []interface{}, filter layerListFilter) ([]interface{}
 	}
 
 	return out, nil
+}
+
+func applyListExtract(input []interface{}, extract layerListExtract) ([]interface{}, error) {
+	out := make([]interface{}, 0, len(input))
+	for i, item := range input {
+		m, ok := item.(map[string]interface{})
+		if !ok {
+			return nil, fmt.Errorf("invalid list item at index %d: expected object list item", i)
+		}
+
+		v, ok := getValueAtPath(m, extract.extractPath)
+		if !ok {
+			return nil, fmt.Errorf("invalid list item at index %d: extract_path %q not found", i, normalizePath(extract.extractPath))
+		}
+
+		s, ok := v.(string)
+		if !ok {
+			return nil, fmt.Errorf("invalid list item at index %d: extract_path %q must resolve to string", i, normalizePath(extract.extractPath))
+		}
+
+		if !matchesInclude(s, extract.include, extract.includeMode) {
+			continue
+		}
+		if matchesAny(s, extract.exclude) {
+			continue
+		}
+
+		out = append(out, s)
+	}
+
+	return out, nil
+}
+
+func applyReplaceValues(input interface{}, replace layerReplaceValues) (interface{}, []string) {
+	if replace.recursive {
+		return replaceValuesRecursive(input, replace.old, replace.new)
+	}
+	return replaceValuesShallow(input, replace.old, replace.new)
+}
+
+func replaceValuesShallow(input interface{}, old string, new string) (interface{}, []string) {
+	s, ok := input.(string)
+	if ok {
+		replaced := strings.ReplaceAll(s, old, new)
+		if replaced != s {
+			return replaced, []string{s}
+		}
+		return replaced, nil
+	}
+
+	m, ok := input.(map[string]interface{})
+	if ok {
+		out := make(map[string]interface{}, len(m))
+		originals := make([]string, 0)
+		for k, v := range m {
+			if sv, ok := v.(string); ok {
+				replaced := strings.ReplaceAll(sv, old, new)
+				if replaced != sv {
+					originals = append(originals, sv)
+				}
+				out[k] = replaced
+				continue
+			}
+			out[k] = v
+		}
+		return out, originals
+	}
+
+	list, ok := input.([]interface{})
+	if ok {
+		out := make([]interface{}, len(list))
+		originals := make([]string, 0)
+		for i, v := range list {
+			if sv, ok := v.(string); ok {
+				replaced := strings.ReplaceAll(sv, old, new)
+				if replaced != sv {
+					originals = append(originals, sv)
+				}
+				out[i] = replaced
+				continue
+			}
+			out[i] = v
+		}
+		return out, originals
+	}
+
+	return input, nil
+}
+
+func replaceValuesRecursive(input interface{}, old string, new string) (interface{}, []string) {
+	s, ok := input.(string)
+	if ok {
+		replaced := strings.ReplaceAll(s, old, new)
+		if replaced != s {
+			return replaced, []string{s}
+		}
+		return replaced, nil
+	}
+
+	m, ok := input.(map[string]interface{})
+	if ok {
+		out := make(map[string]interface{}, len(m))
+		originals := make([]string, 0)
+		for k, v := range m {
+			replaced, childOriginals := replaceValuesRecursive(v, old, new)
+			out[k] = replaced
+			originals = append(originals, childOriginals...)
+		}
+		return out, originals
+	}
+
+	list, ok := input.([]interface{})
+	if ok {
+		out := make([]interface{}, len(list))
+		originals := make([]string, 0)
+		for i, v := range list {
+			replaced, childOriginals := replaceValuesRecursive(v, old, new)
+			out[i] = replaced
+			originals = append(originals, childOriginals...)
+		}
+		return out, originals
+	}
+
+	return input, nil
 }
 
 func getFilterCandidate(item interface{}, matchPath []string) (string, error) {
@@ -684,15 +994,34 @@ func getValueAtPath(root interface{}, path []string) (interface{}, bool) {
 
 	cur := root
 	for _, segment := range path {
-		m, ok := cur.(map[string]interface{})
-		if !ok {
+		switch typed := cur.(type) {
+		case map[string]interface{}:
+			next, ok := typed[segment]
+			if !ok {
+				return nil, false
+			}
+			cur = next
+		case []interface{}:
+			if index, ok := parsePathIndex(segment); ok {
+				if index < 0 || index >= len(typed) {
+					return nil, false
+				}
+				cur = typed[index]
+				continue
+			}
+
+			selectorKey, selectorValue, ok := parsePathSelector(segment)
+			if !ok {
+				return nil, false
+			}
+			index, ok := findArrayObjectBySelector(typed, selectorKey, selectorValue)
+			if !ok {
+				return nil, false
+			}
+			cur = typed[index]
+		default:
 			return nil, false
 		}
-		next, ok := m[segment]
-		if !ok {
-			return nil, false
-		}
-		cur = next
 	}
 
 	return cur, true
@@ -703,26 +1032,153 @@ func setMapValueAtPath(root map[string]interface{}, path []string, value interfa
 		return fmt.Errorf("path cannot be empty")
 	}
 
-	cur := root
+	var cur interface{} = root
 	for i := 0; i < len(path)-1; i++ {
 		segment := path[i]
-		next, ok := cur[segment]
-		if !ok {
-			child := map[string]interface{}{}
-			cur[segment] = child
-			cur = child
-			continue
-		}
+		switch typed := cur.(type) {
+		case map[string]interface{}:
+			next, ok := typed[segment]
+			if !ok {
+				if _, isIndex := parsePathIndex(path[i+1]); isIndex {
+					return fmt.Errorf("target path %q is not writable: segment %q must be an array", normalizePath(path), normalizePath(path[:i+1]))
+				}
+				child := map[string]interface{}{}
+				typed[segment] = child
+				cur = child
+				continue
+			}
+			cur = next
+		case []interface{}:
+			if index, ok := parsePathIndex(segment); ok {
+				if index < 0 || index >= len(typed) {
+					return fmt.Errorf("target path %q is not writable: index %d out of range at segment %q", normalizePath(path), index, normalizePath(path[:i+1]))
+				}
+				cur = typed[index]
+				continue
+			}
 
-		nextMap, ok := next.(map[string]interface{})
-		if !ok {
-			return fmt.Errorf("target path %q is not writable: segment %q is not an object", normalizePath(path), normalizePath(path[:i+1]))
+			selectorKey, selectorValue, ok := parsePathSelector(segment)
+			if !ok {
+				return fmt.Errorf("target path %q is not writable: segment %q must be an array index or selector", normalizePath(path), normalizePath(path[:i+1]))
+			}
+
+			index, err := findUniqueArrayObjectBySelector(typed, selectorKey, selectorValue)
+			if err != nil {
+				return fmt.Errorf("target path %q is not writable: %w", normalizePath(path), err)
+			}
+			cur = typed[index]
+		default:
+			return fmt.Errorf("target path %q is not writable: segment %q is not an object or array", normalizePath(path), normalizePath(path[:i+1]))
 		}
-		cur = nextMap
 	}
 
-	cur[path[len(path)-1]] = value
-	return nil
+	lastSegment := path[len(path)-1]
+	switch typed := cur.(type) {
+	case map[string]interface{}:
+		typed[lastSegment] = value
+		return nil
+	case []interface{}:
+		if index, ok := parsePathIndex(lastSegment); ok {
+			if index < 0 || index >= len(typed) {
+				return fmt.Errorf("target path %q is not writable: final index %d out of range", normalizePath(path), index)
+			}
+			typed[index] = value
+			return nil
+		}
+
+		selectorKey, selectorValue, ok := parsePathSelector(lastSegment)
+		if !ok {
+			return fmt.Errorf("target path %q is not writable: final segment %q must be an array index or selector", normalizePath(path), normalizePath(path))
+		}
+		index, err := findUniqueArrayObjectBySelector(typed, selectorKey, selectorValue)
+		if err != nil {
+			return fmt.Errorf("target path %q is not writable: %w", normalizePath(path), err)
+		}
+		typed[index] = value
+		return nil
+	default:
+		return fmt.Errorf("target path %q is not writable: parent is not an object or array", normalizePath(path))
+	}
+}
+
+func parsePathIndex(segment string) (int, bool) {
+	index, err := strconv.Atoi(segment)
+	if err != nil {
+		return 0, false
+	}
+	return index, true
+}
+
+func parsePathSelector(segment string) (string, string, bool) {
+	key, value, ok := strings.Cut(segment, "=")
+	if !ok {
+		return "", "", false
+	}
+
+	key = strings.TrimSpace(key)
+	value = strings.TrimSpace(value)
+	if key == "" || value == "" {
+		return "", "", false
+	}
+
+	if (strings.HasPrefix(value, `"`) && strings.HasSuffix(value, `"`)) || (strings.HasPrefix(value, "'") && strings.HasSuffix(value, "'")) {
+		if len(value) < 2 {
+			return "", "", false
+		}
+
+		if strings.HasPrefix(value, "'") {
+			inner := value[1 : len(value)-1]
+			inner = strings.ReplaceAll(inner, `\'`, `'`)
+			inner = strings.ReplaceAll(inner, `\\`, `\`)
+			return key, inner, true
+		}
+
+		unquoted, err := strconv.Unquote(value)
+		if err != nil {
+			return "", "", false
+		}
+		return key, unquoted, true
+	}
+
+	return key, value, true
+}
+
+func findArrayObjectBySelector(items []interface{}, key string, expected string) (int, bool) {
+	index, err := findUniqueArrayObjectBySelector(items, key, expected)
+	if err != nil {
+		return 0, false
+	}
+	return index, true
+}
+
+func findUniqueArrayObjectBySelector(items []interface{}, key string, expected string) (int, error) {
+	matches := make([]int, 0)
+	for i, item := range items {
+		m, ok := item.(map[string]interface{})
+		if !ok {
+			return 0, fmt.Errorf("selector [%s=%s] requires object array items, got %T at index %d", key, expected, item, i)
+		}
+		raw, ok := m[key]
+		if !ok {
+			continue
+		}
+		actual, ok := raw.(string)
+		if !ok {
+			return 0, fmt.Errorf("selector [%s=%s] requires string field %q, got %T at index %d", key, expected, key, raw, i)
+		}
+		if actual == expected {
+			matches = append(matches, i)
+		}
+	}
+
+	if len(matches) == 0 {
+		return 0, fmt.Errorf("selector [%s=%s] matched no array item", key, expected)
+	}
+	if len(matches) > 1 {
+		return 0, fmt.Errorf("selector [%s=%s] matched multiple array items", key, expected)
+	}
+
+	return matches[0], nil
 }
 
 func normalizeDotPath(path string) (string, error) {
@@ -771,7 +1227,79 @@ func splitDotPath(path string) ([]string, error) {
 	}
 	parts = append(parts, segment.String())
 
-	return parts, nil
+	expandedParts, err := expandBracketPathSegments(parts)
+	if err != nil {
+		return nil, err
+	}
+
+	return expandedParts, nil
+}
+
+func expandBracketPathSegments(parts []string) ([]string, error) {
+	out := make([]string, 0, len(parts))
+	for _, part := range parts {
+		expanded, err := expandBracketPathSegment(part)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, expanded...)
+	}
+	return out, nil
+}
+
+func expandBracketPathSegment(segment string) ([]string, error) {
+	out := make([]string, 0, 1)
+	var token strings.Builder
+	afterIndex := false
+
+	for i := 0; i < len(segment); {
+		ch := segment[i]
+		if ch != '[' {
+			if afterIndex {
+				return nil, fmt.Errorf("invalid bracket path segment %q", segment)
+			}
+			token.WriteByte(ch)
+			i++
+			continue
+		}
+
+		if token.Len() > 0 {
+			out = append(out, token.String())
+			token.Reset()
+		}
+
+		end := i + 1
+		for end < len(segment) && segment[end] != ']' {
+			end++
+		}
+		if end >= len(segment) {
+			return nil, fmt.Errorf("invalid bracket path segment %q", segment)
+		}
+
+		indexRaw := segment[i+1 : end]
+		if indexRaw == "" {
+			return nil, fmt.Errorf("invalid bracket path segment %q", segment)
+		}
+		if _, err := strconv.Atoi(indexRaw); err != nil {
+			if _, _, ok := parsePathSelector(indexRaw); !ok {
+				return nil, fmt.Errorf("invalid bracket path segment %q", segment)
+			}
+		}
+
+		out = append(out, indexRaw)
+		afterIndex = true
+		i = end + 1
+	}
+
+	if token.Len() > 0 {
+		out = append(out, token.String())
+	}
+
+	if len(out) == 0 {
+		return nil, fmt.Errorf("empty segment")
+	}
+
+	return out, nil
 }
 
 func normalizePath(parts []string) string {
