@@ -470,33 +470,44 @@ func TestComposeWithoutLayersReturnsBaseContent(t *testing.T) {
 	require.Equal("a drop of golden sun", got["ray"])
 }
 
-func TestComposeExtractLayerPath(t *testing.T) {
+func TestComposeTransformListFilterStringList(t *testing.T) {
 	require := require.New(t)
 
-	c := compose.NewMock("base.yaml", []string{"1-layer.yaml"})
-	c.ExtractLayerPath = "app.db"
+	c := compose.NewMock("configs/base.yaml", []string{"1-layer.yaml"})
 	fs := c.GetFilesystem()
 
 	base := `app:
-  db:
-    host: base
-    pool: 10
-    ports: [5432]
-  cache: true
-keep: value
+  backends: [base]
 `
-	layer := `noise: should-not-merge
+	layer := `transform:
+  kind: list_filter
+  source:
+    file: source.yaml
+    path: inventory.backends
+  target:
+    path: app.backends
+  list_filter:
+    include: ["prod-", "cn-"]
+    exclude: ["canary$"]
+---
 app:
-  db:
-    host: layer
-    ports: [5433]
+  backends: []
+`
+	source := `inventory:
+  backends:
+    - prod-a
+    - prod-canary
+    - cn-main
+    - dev-main
 `
 
-	err := fs.WriteFile("base.yaml", []byte(base), 0755)
+	err := fs.MkdirAll("configs/base.yaml.d", 0755)
 	require.NoError(err)
-	err = fs.Mkdir("base.yaml.d", 0755)
+	err = fs.WriteFile("configs/base.yaml", []byte(base), 0755)
 	require.NoError(err)
-	err = fs.WriteFile("base.yaml.d/1-layer.yaml", []byte(layer), 0755)
+	err = fs.WriteFile("configs/base.yaml.d/1-layer.yaml", []byte(layer), 0755)
+	require.NoError(err)
+	err = fs.WriteFile("configs/source.yaml", []byte(source), 0755)
 	require.NoError(err)
 
 	out, err := c.Run()
@@ -507,29 +518,40 @@ app:
 	require.NoError(err)
 
 	app := got["app"].(map[string]interface{})
-	db := app["db"].(map[string]interface{})
-	require.Equal("layer", db["host"])
-	require.Equal(10, db["pool"])
-	require.Equal([]interface{}{5433}, db["ports"])
-	require.Equal(true, app["cache"])
-	require.Equal("value", got["keep"])
-	require.NotContains(got, "noise")
+	require.Equal([]interface{}{"prod-a", "cn-main"}, app["backends"])
 }
 
-func TestComposeExtractLayerPathSkipsLayerWhenPathMissing(t *testing.T) {
+func TestComposeTransformListFilterObjectList(t *testing.T) {
 	require := require.New(t)
 
 	c := compose.NewMock("base.yaml", []string{"1-layer.yaml"})
-	c.ExtractLayerPath = "app.db"
 	fs := c.GetFilesystem()
 
 	base := `app:
-  db:
-    host: base
-  cache: true
+  backends: []
 `
-	layer := `app:
-  cache: false
+	layer := `transform:
+  kind: list_filter
+  source:
+    file: source.yaml
+    path: inventory.backends
+  target:
+    path: app.backends
+  list_filter:
+    match_path: name
+    include: ["prod-"]
+---
+app:
+  backends: []
+`
+	source := `inventory:
+  backends:
+    - name: prod-a
+      url: https://a
+    - name: dev-a
+      url: https://dev
+    - name: prod-b
+      url: https://b
 `
 
 	err := fs.WriteFile("base.yaml", []byte(base), 0755)
@@ -537,6 +559,8 @@ func TestComposeExtractLayerPathSkipsLayerWhenPathMissing(t *testing.T) {
 	err = fs.Mkdir("base.yaml.d", 0755)
 	require.NoError(err)
 	err = fs.WriteFile("base.yaml.d/1-layer.yaml", []byte(layer), 0755)
+	require.NoError(err)
+	err = fs.WriteFile("source.yaml", []byte(source), 0755)
 	require.NoError(err)
 
 	out, err := c.Run()
@@ -547,25 +571,83 @@ func TestComposeExtractLayerPathSkipsLayerWhenPathMissing(t *testing.T) {
 	require.NoError(err)
 
 	app := got["app"].(map[string]interface{})
-	db := app["db"].(map[string]interface{})
-	require.Equal("base", db["host"])
-	require.Equal(true, app["cache"])
+	backends := app["backends"].([]interface{})
+	require.Len(backends, 2)
+	first := backends[0].(map[string]interface{})
+	second := backends[1].(map[string]interface{})
+	require.Equal("prod-a", first["name"])
+	require.Equal("prod-b", second["name"])
 }
 
-func TestComposeExtractLayerPathSupportsEscapedDotKey(t *testing.T) {
+func TestComposeTransformListFilterDefaultsTargetPathToSourcePath(t *testing.T) {
 	require := require.New(t)
 
 	c := compose.NewMock("base.yaml", []string{"1-layer.yaml"})
-	c.ExtractLayerPath = `app.db\.main`
+	fs := c.GetFilesystem()
+
+	base := `inventory:
+  backends: [base]
+`
+	layer := `transform:
+  kind: list_filter
+  source:
+    file: source.yaml
+    path: inventory.backends
+  list_filter:
+    include: ["prod-"]
+---
+inventory:
+  backends: []
+`
+	source := `inventory:
+  backends: [prod-a, dev-a]
+`
+
+	err := fs.WriteFile("base.yaml", []byte(base), 0755)
+	require.NoError(err)
+	err = fs.Mkdir("base.yaml.d", 0755)
+	require.NoError(err)
+	err = fs.WriteFile("base.yaml.d/1-layer.yaml", []byte(layer), 0755)
+	require.NoError(err)
+	err = fs.WriteFile("source.yaml", []byte(source), 0755)
+	require.NoError(err)
+
+	out, err := c.Run()
+	require.NoError(err)
+
+	var got map[string]interface{}
+	err = yaml.Unmarshal([]byte(out), &got)
+	require.NoError(err)
+
+	inventory := got["inventory"].(map[string]interface{})
+	require.Equal([]interface{}{"prod-a"}, inventory["backends"])
+}
+
+func TestComposeTransformListFilterReturnsErrorWhenObjectMatchPathMissing(t *testing.T) {
+	require := require.New(t)
+
+	c := compose.NewMock("base.yaml", []string{"1-layer.yaml"})
 	fs := c.GetFilesystem()
 
 	base := `app:
-  db.main:
-    ports: [5432]
+  backends: []
 `
-	layer := `app:
-  db.main:
-    ports: [5433]
+	layer := `transform:
+  kind: list_filter
+  source:
+    file: source.yaml
+    path: inventory.backends
+  target:
+    path: app.backends
+  list_filter:
+    match_path: name
+---
+app:
+  backends: []
+`
+	source := `inventory:
+  backends:
+    - url: https://a
 `
 
 	err := fs.WriteFile("base.yaml", []byte(base), 0755)
@@ -574,36 +656,91 @@ func TestComposeExtractLayerPathSupportsEscapedDotKey(t *testing.T) {
 	require.NoError(err)
 	err = fs.WriteFile("base.yaml.d/1-layer.yaml", []byte(layer), 0755)
 	require.NoError(err)
-
-	out, err := c.Run()
-	require.NoError(err)
-
-	var got map[string]interface{}
-	err = yaml.Unmarshal([]byte(out), &got)
-	require.NoError(err)
-
-	app := got["app"].(map[string]interface{})
-	dbMain := app["db.main"].(map[string]interface{})
-	require.Equal([]interface{}{5433}, dbMain["ports"])
-}
-
-func TestComposeReturnsErrorForInvalidExtractLayerPath(t *testing.T) {
-	require := require.New(t)
-
-	c := compose.NewMock("base.yaml", []string{"1-layer.yaml"})
-	c.ExtractLayerPath = "app."
-	fs := c.GetFilesystem()
-
-	err := fs.WriteFile("base.yaml", []byte(baseYAML), 0755)
-	require.NoError(err)
-	err = fs.Mkdir("base.yaml.d", 0755)
-	require.NoError(err)
-	err = fs.WriteFile("base.yaml.d/1-layer.yaml", []byte("xmas: false\n"), 0755)
+	err = fs.WriteFile("source.yaml", []byte(source), 0755)
 	require.NoError(err)
 
 	_, err = c.Run()
 	require.Error(err)
-	require.Contains(err.Error(), "invalid extract layer path")
+	require.Contains(err.Error(), "match_path \"name\" not found")
+}
+
+func TestComposeTransformListFilterReturnsErrorWhenObjectListHasNoMatchPath(t *testing.T) {
+	require := require.New(t)
+
+	c := compose.NewMock("base.yaml", []string{"1-layer.yaml"})
+	fs := c.GetFilesystem()
+
+	base := `app:
+  backends: []
+`
+	layer := `transform:
+  kind: list_filter
+  source:
+    file: source.yaml
+    path: inventory.backends
+  target:
+    path: app.backends
+  list_filter:
+    include: ["prod-"]
+---
+app:
+  backends: []
+`
+	source := `inventory:
+  backends:
+    - name: prod-a
+`
+
+	err := fs.WriteFile("base.yaml", []byte(base), 0755)
+	require.NoError(err)
+	err = fs.Mkdir("base.yaml.d", 0755)
+	require.NoError(err)
+	err = fs.WriteFile("base.yaml.d/1-layer.yaml", []byte(layer), 0755)
+	require.NoError(err)
+	err = fs.WriteFile("source.yaml", []byte(source), 0755)
+	require.NoError(err)
+
+	_, err = c.Run()
+	require.Error(err)
+	require.Contains(err.Error(), "object list requires transform.list_filter.match_path")
+}
+
+func TestComposeTransformListFilterReturnsErrorWhenSourcePathIsNotList(t *testing.T) {
+	require := require.New(t)
+
+	c := compose.NewMock("base.yaml", []string{"1-layer.yaml"})
+	fs := c.GetFilesystem()
+
+	base := `app:
+  backends: []
+`
+	layer := `transform:
+  kind: list_filter
+  source:
+    file: source.yaml
+    path: inventory.backends
+  target:
+    path: app.backends
+---
+app:
+  backends: []
+`
+	source := `inventory:
+  backends: prod-a
+`
+
+	err := fs.WriteFile("base.yaml", []byte(base), 0755)
+	require.NoError(err)
+	err = fs.Mkdir("base.yaml.d", 0755)
+	require.NoError(err)
+	err = fs.WriteFile("base.yaml.d/1-layer.yaml", []byte(layer), 0755)
+	require.NoError(err)
+	err = fs.WriteFile("source.yaml", []byte(source), 0755)
+	require.NoError(err)
+
+	_, err = c.Run()
+	require.Error(err)
+	require.Contains(err.Error(), "must resolve to a list")
 }
 
 func TestComposeOutputUsesTwoSpaceIndentForNestedLists(t *testing.T) {

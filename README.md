@@ -58,22 +58,47 @@ Path rules:
 ```bash
 yaml-compose base.yaml
 yaml-compose base.yaml -o out.yaml
-yaml-compose base.yaml -e app.db
 ```
 
 Options:
 
 - `-o, --output`: write result to a file (otherwise prints to stdout)
-- `-e, --extract-layer`: extract a field path from each layer before compose (dot path, supports `\.` escape)
 
-When `--extract-layer` is set, each layer file is treated as a large YAML source, and only the extracted field is used as layer payload. The extracted value is wrapped back to its original path before merge.
+Breaking change: `--extract-layer` has been removed.
 
-Example (`--extract-layer app.db`):
+## Transform list filter (v2)
 
-- Layer input has `app.db`
-- Effective layer payload becomes only `app: { db: ... }`
-- Other keys in that layer are ignored
-- If a layer does not contain that path, it is skipped
+Layer metadata supports a built-in transform to load an external YAML list and filter it with `grep` + `grep -v` style rules before merge.
+
+Transform schema:
+
+```yaml
+transform:
+  kind: list_filter
+  source:
+    file: ./inventory.yaml
+    path: app.backends
+  target:
+    path: app.backends
+  list_filter:
+    match_path: name
+    include: ["prod-", "cn-"]
+    exclude: ["-canary$", "-deprecated$"]
+    include_mode: any
+```
+
+Rules:
+
+- `source.file`: external YAML file path (relative to base YAML directory if not absolute)
+- `source.path`: dot path in source YAML; must resolve to a list
+- `target.path`: where filtered list is written into current layer (defaults to `source.path`)
+- `list_filter.include`: keep matched items (`grep` behavior)
+- `list_filter.exclude`: remove matched items (`grep -v` behavior)
+- `list_filter.include_mode`: `any` (default) or `all`
+- Input list supports:
+  - `[]string`: match each string item directly
+  - `[]object`: require `match_path`, match the string at that object path
+- For `[]object`, missing `match_path` or non-string value returns an error
 
 ## Example
 
@@ -103,6 +128,24 @@ app:
     ports:
       - 5433
 feature: null
+```
+
+`base.yaml.d/2-transform.yaml`:
+
+```yaml
+transform:
+  kind: list_filter
+  source:
+    file: inventory.yaml
+    path: app.backends
+  target:
+    path: app.backends
+  list_filter:
+    include: ["prod-"]
+    exclude: ["-canary$"]
+---
+app:
+  backends: []
 ```
 
 Output:

@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"path/filepath"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -46,11 +48,10 @@ func NewLayerComparator(layers []string) func(i, j int) bool {
 }
 
 type Compose struct {
-	Base             string
-	Layers           []string
-	ExtractLayerPath string
-	fs               *afero.Afero
-	marshal          marshalFunc
+	Base    string
+	Layers  []string
+	fs      *afero.Afero
+	marshal marshalFunc
 }
 
 type mapMergeStrategy string
@@ -79,7 +80,8 @@ var defaultMergeStrategy = mergeStrategy{
 }
 
 type layerMetadata struct {
-	Merge mergeMetadata `yaml:"merge"`
+	Merge     mergeMetadata           `yaml:"merge"`
+	Transform *layerTransformMetadata `yaml:"transform"`
 }
 
 type mergeMetadata struct {
@@ -96,6 +98,50 @@ type layerMergeStrategy struct {
 	defaults mergeStrategy
 	paths    map[string]mergeStrategy
 }
+
+type layerTransformMetadata struct {
+	Kind       string                  `yaml:"kind"`
+	Source     layerTransformSource    `yaml:"source"`
+	Target     layerTransformTarget    `yaml:"target"`
+	ListFilter layerListFilterMetadata `yaml:"list_filter"`
+}
+
+type layerTransformSource struct {
+	File string `yaml:"file"`
+	Path string `yaml:"path"`
+}
+
+type layerTransformTarget struct {
+	Path string `yaml:"path"`
+}
+
+type layerListFilterMetadata struct {
+	MatchPath   string   `yaml:"match_path"`
+	Include     []string `yaml:"include"`
+	Exclude     []string `yaml:"exclude"`
+	IncludeMode string   `yaml:"include_mode"`
+}
+
+type layerTransform struct {
+	sourceFile string
+	sourcePath []string
+	targetPath []string
+	listFilter layerListFilter
+}
+
+type layerListFilter struct {
+	matchPath   []string
+	include     []*regexp.Regexp
+	exclude     []*regexp.Regexp
+	includeMode includeMode
+}
+
+type includeMode string
+
+const (
+	includeModeAny includeMode = "any"
+	includeModeAll includeMode = "all"
+)
 
 func New(base string, layers []string) *Compose {
 	return NewWithFs(base, layers, afero.NewOsFs())
@@ -132,24 +178,11 @@ func (c *Compose) GetFilesystem() *afero.Afero {
 	return c.fs
 }
 
-func (c *Compose) SetExtractLayerPath(path string) {
-	c.ExtractLayerPath = path
-}
-
 func (c *Compose) Run() (string, error) {
 	for _, layer := range c.Layers {
 		if err := validateLayerName(layer); err != nil {
 			return "", err
 		}
-	}
-
-	var extractLayerParts []string
-	if c.ExtractLayerPath != "" {
-		parts, err := splitDotPath(c.ExtractLayerPath)
-		if err != nil {
-			return "", fmt.Errorf("invalid extract layer path %q: %w", c.ExtractLayerPath, err)
-		}
-		extractLayerParts = parts
 	}
 
 	sort.SliceStable(c.Layers, NewLayerComparator(c.Layers))
@@ -171,17 +204,16 @@ func (c *Compose) Run() (string, error) {
 			return "", fmt.Errorf("failed to read layer compose file: %s", err)
 		}
 
-		l, strategy, err := parseLayer(in)
+		l, strategy, transform, err := parseLayer(in)
 		if err != nil {
 			return "", fmt.Errorf("failed to parse layer compose file: %s", err)
 		}
 
-		if len(extractLayerParts) > 0 {
-			extracted, ok := extractLayerAtPath(l, extractLayerParts)
-			if !ok {
-				continue
+		if transform != nil {
+			l, err = c.applyLayerTransform(l, transform)
+			if err != nil {
+				return "", fmt.Errorf("failed to apply layer transform for %q: %w", layer, err)
 			}
-			l = extracted
 		}
 
 		b = mergeMapsWithStrategy(b, l, strategy, nil)
@@ -269,38 +301,256 @@ func mergeValue(base interface{}, layer interface{}, strategy layerMergeStrategy
 	return layer
 }
 
-func parseLayer(in []byte) (map[string]interface{}, layerMergeStrategy, error) {
+func parseLayer(in []byte) (map[string]interface{}, layerMergeStrategy, *layerTransform, error) {
 	docs, err := decodeYAMLDocuments(in)
 	if err != nil {
-		return nil, layerMergeStrategy{}, err
+		return nil, layerMergeStrategy{}, nil, err
 	}
 
 	switch len(docs) {
 	case 0:
-		return map[string]interface{}{}, layerMergeStrategy{defaults: defaultMergeStrategy}, nil
+		return map[string]interface{}{}, layerMergeStrategy{defaults: defaultMergeStrategy}, nil, nil
 	case 1:
 		data, err := decodeYAMLMap(docs[0])
 		if err != nil {
-			return nil, layerMergeStrategy{}, err
+			return nil, layerMergeStrategy{}, nil, err
 		}
-		return data, layerMergeStrategy{defaults: defaultMergeStrategy}, nil
+		return data, layerMergeStrategy{defaults: defaultMergeStrategy}, nil, nil
 	case 2:
 		meta, err := decodeLayerMetadata(docs[0])
 		if err != nil {
-			return nil, layerMergeStrategy{}, err
+			return nil, layerMergeStrategy{}, nil, err
 		}
 		strategy, err := buildLayerMergeStrategy(meta)
 		if err != nil {
-			return nil, layerMergeStrategy{}, err
+			return nil, layerMergeStrategy{}, nil, err
+		}
+		transform, err := buildLayerTransform(meta)
+		if err != nil {
+			return nil, layerMergeStrategy{}, nil, err
 		}
 		data, err := decodeYAMLMap(docs[1])
 		if err != nil {
-			return nil, layerMergeStrategy{}, err
+			return nil, layerMergeStrategy{}, nil, err
 		}
-		return data, strategy, nil
+		return data, strategy, transform, nil
 	default:
-		return nil, layerMergeStrategy{}, fmt.Errorf("expected at most two YAML documents (metadata and data), got %d", len(docs))
+		return nil, layerMergeStrategy{}, nil, fmt.Errorf("expected at most two YAML documents (metadata and data), got %d", len(docs))
 	}
+}
+
+func buildLayerTransform(meta layerMetadata) (*layerTransform, error) {
+	if meta.Transform == nil {
+		return nil, nil
+	}
+
+	if meta.Transform.Kind != "list_filter" {
+		return nil, fmt.Errorf("invalid transform.kind %q: supported values: list_filter", meta.Transform.Kind)
+	}
+
+	if meta.Transform.Source.File == "" {
+		return nil, fmt.Errorf("invalid transform.source.file: cannot be empty")
+	}
+
+	sourcePath, err := splitDotPath(meta.Transform.Source.Path)
+	if err != nil {
+		return nil, fmt.Errorf("invalid transform.source.path %q: %w", meta.Transform.Source.Path, err)
+	}
+
+	targetPathRaw := meta.Transform.Target.Path
+	if targetPathRaw == "" {
+		targetPathRaw = meta.Transform.Source.Path
+	}
+	targetPath, err := splitDotPath(targetPathRaw)
+	if err != nil {
+		return nil, fmt.Errorf("invalid transform.target.path %q: %w", targetPathRaw, err)
+	}
+
+	filter, err := buildListFilter(meta.Transform.ListFilter)
+	if err != nil {
+		return nil, err
+	}
+
+	return &layerTransform{
+		sourceFile: meta.Transform.Source.File,
+		sourcePath: sourcePath,
+		targetPath: targetPath,
+		listFilter: filter,
+	}, nil
+}
+
+func buildListFilter(meta layerListFilterMetadata) (layerListFilter, error) {
+	includeRegex, err := compileRegexList(meta.Include, "transform.list_filter.include")
+	if err != nil {
+		return layerListFilter{}, err
+	}
+
+	excludeRegex, err := compileRegexList(meta.Exclude, "transform.list_filter.exclude")
+	if err != nil {
+		return layerListFilter{}, err
+	}
+
+	mode := includeModeAny
+	if meta.IncludeMode != "" {
+		mode = includeMode(meta.IncludeMode)
+	}
+	if mode != includeModeAny && mode != includeModeAll {
+		return layerListFilter{}, fmt.Errorf("invalid transform.list_filter.include_mode %q: supported values: any, all", meta.IncludeMode)
+	}
+
+	var matchPath []string
+	if meta.MatchPath != "" {
+		matchPath, err = splitDotPath(meta.MatchPath)
+		if err != nil {
+			return layerListFilter{}, fmt.Errorf("invalid transform.list_filter.match_path %q: %w", meta.MatchPath, err)
+		}
+	}
+
+	return layerListFilter{
+		matchPath:   matchPath,
+		include:     includeRegex,
+		exclude:     excludeRegex,
+		includeMode: mode,
+	}, nil
+}
+
+func compileRegexList(raw []string, fieldName string) ([]*regexp.Regexp, error) {
+	out := make([]*regexp.Regexp, 0, len(raw))
+	for i, expr := range raw {
+		re, err := regexp.Compile(expr)
+		if err != nil {
+			return nil, fmt.Errorf("invalid %s[%d] %q: %w", fieldName, i, expr, err)
+		}
+		out = append(out, re)
+	}
+	return out, nil
+}
+
+func (c *Compose) applyLayerTransform(layer map[string]interface{}, transform *layerTransform) (map[string]interface{}, error) {
+	if layer == nil {
+		layer = map[string]interface{}{}
+	}
+
+	sourceData, err := c.readSourceYAML(transform.sourceFile)
+	if err != nil {
+		return nil, err
+	}
+
+	input, ok := getValueAtPath(sourceData, transform.sourcePath)
+	if !ok {
+		return nil, fmt.Errorf("source path %q not found", normalizePath(transform.sourcePath))
+	}
+
+	inputList, ok := input.([]interface{})
+	if !ok {
+		return nil, fmt.Errorf("source path %q must resolve to a list", normalizePath(transform.sourcePath))
+	}
+
+	outputList, err := applyListFilter(inputList, transform.listFilter)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := setMapValueAtPath(layer, transform.targetPath, outputList); err != nil {
+		return nil, err
+	}
+
+	return layer, nil
+}
+
+func (c *Compose) readSourceYAML(rawPath string) (interface{}, error) {
+	resolvedPath := rawPath
+	if !filepath.IsAbs(rawPath) {
+		resolvedPath = filepath.Clean(filepath.Join(filepath.Dir(c.Base), rawPath))
+	}
+
+	in, err := c.fs.ReadFile(resolvedPath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read transform source file %q: %w", resolvedPath, err)
+	}
+
+	var out interface{}
+	if err := yaml.Unmarshal(in, &out); err != nil {
+		return nil, fmt.Errorf("failed to parse transform source file %q: %w", resolvedPath, err)
+	}
+
+	return out, nil
+}
+
+func applyListFilter(input []interface{}, filter layerListFilter) ([]interface{}, error) {
+	out := make([]interface{}, 0, len(input))
+	for i, item := range input {
+		candidate, err := getFilterCandidate(item, filter.matchPath)
+		if err != nil {
+			return nil, fmt.Errorf("invalid list item at index %d: %w", i, err)
+		}
+
+		if !matchesInclude(candidate, filter.include, filter.includeMode) {
+			continue
+		}
+		if matchesAny(candidate, filter.exclude) {
+			continue
+		}
+		out = append(out, item)
+	}
+
+	return out, nil
+}
+
+func getFilterCandidate(item interface{}, matchPath []string) (string, error) {
+	if len(matchPath) == 0 {
+		if _, isObject := item.(map[string]interface{}); isObject {
+			return "", fmt.Errorf("object list requires transform.list_filter.match_path")
+		}
+		s, ok := item.(string)
+		if !ok {
+			return "", fmt.Errorf("expected string list item")
+		}
+		return s, nil
+	}
+
+	m, ok := item.(map[string]interface{})
+	if !ok {
+		return "", fmt.Errorf("expected object list item for match_path %q", normalizePath(matchPath))
+	}
+
+	v, ok := getValueAtPath(m, matchPath)
+	if !ok {
+		return "", fmt.Errorf("match_path %q not found", normalizePath(matchPath))
+	}
+
+	s, ok := v.(string)
+	if !ok {
+		return "", fmt.Errorf("match_path %q must resolve to string", normalizePath(matchPath))
+	}
+
+	return s, nil
+}
+
+func matchesInclude(candidate string, include []*regexp.Regexp, mode includeMode) bool {
+	if len(include) == 0 {
+		return true
+	}
+
+	if mode == includeModeAll {
+		for _, re := range include {
+			if !re.MatchString(candidate) {
+				return false
+			}
+		}
+		return true
+	}
+
+	return matchesAny(candidate, include)
+}
+
+func matchesAny(candidate string, regex []*regexp.Regexp) bool {
+	for _, re := range regex {
+		if re.MatchString(candidate) {
+			return true
+		}
+	}
+	return false
 }
 
 func decodeYAMLDocuments(in []byte) ([]*yaml.Node, error) {
@@ -427,12 +677,12 @@ func appendPath(path []string, key string) []string {
 	return next
 }
 
-func extractLayerAtPath(layer map[string]interface{}, path []string) (map[string]interface{}, bool) {
+func getValueAtPath(root interface{}, path []string) (interface{}, bool) {
 	if len(path) == 0 {
-		return layer, true
+		return root, true
 	}
 
-	var cur interface{} = layer
+	cur := root
 	for _, segment := range path {
 		m, ok := cur.(map[string]interface{})
 		if !ok {
@@ -445,16 +695,34 @@ func extractLayerAtPath(layer map[string]interface{}, path []string) (map[string
 		cur = next
 	}
 
-	ret := cur
-	for i := len(path) - 1; i >= 0; i-- {
-		ret = map[string]interface{}{path[i]: ret}
+	return cur, true
+}
+
+func setMapValueAtPath(root map[string]interface{}, path []string, value interface{}) error {
+	if len(path) == 0 {
+		return fmt.Errorf("path cannot be empty")
 	}
 
-	wrapped, ok := ret.(map[string]interface{})
-	if !ok {
-		return nil, false
+	cur := root
+	for i := 0; i < len(path)-1; i++ {
+		segment := path[i]
+		next, ok := cur[segment]
+		if !ok {
+			child := map[string]interface{}{}
+			cur[segment] = child
+			cur = child
+			continue
+		}
+
+		nextMap, ok := next.(map[string]interface{})
+		if !ok {
+			return fmt.Errorf("target path %q is not writable: segment %q is not an object", normalizePath(path), normalizePath(path[:i+1]))
+		}
+		cur = nextMap
 	}
-	return wrapped, true
+
+	cur[path[len(path)-1]] = value
+	return nil
 }
 
 func normalizeDotPath(path string) (string, error) {
