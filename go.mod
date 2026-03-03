@@ -1,6 +1,6 @@
 module github.com/fanyang89/yaml-compose
 
-go 1.18
+go 1.26.0
 
 require (
 	github.com/spf13/afero v1.8.2
