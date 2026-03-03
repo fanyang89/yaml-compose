@@ -81,9 +81,17 @@ var defaultMergeStrategy = mergeStrategy{
 }
 
 type layerMetadata struct {
-	Merge      mergeMetadata            `yaml:"merge"`
-	Transform  *layerTransformMetadata  `yaml:"transform"`
-	Transforms []layerTransformMetadata `yaml:"transforms"`
+	Operators []layerOperatorMetadata `yaml:"operators"`
+}
+
+type layerOperatorMetadata struct {
+	Kind        string                     `yaml:"kind"`
+	Source      layerTransformSource       `yaml:"source"`
+	Target      layerTransformTarget       `yaml:"target"`
+	Merge       mergeMetadata              `yaml:"merge"`
+	ListFilter  layerListFilterMetadata    `yaml:"list_filter"`
+	ListExtract layerListExtractMetadata   `yaml:"list_extract"`
+	ReplaceVals layerReplaceValuesMetadata `yaml:"replace_values"`
 }
 
 type mergeMetadata struct {
@@ -142,14 +150,16 @@ type layerReplaceValuesMetadata struct {
 }
 
 type layerTransform struct {
-	kind        string
-	sourceFrom  string
-	sourceFile  string
-	sourcePath  []string
-	targetPath  []string
-	listFilter  layerListFilter
-	listExtract layerListExtract
-	replaceVals layerReplaceValues
+	kind          string
+	sourceFrom    string
+	sourceFile    string
+	sourcePath    []string
+	hasSourcePath bool
+	targetPath    []string
+	listFilter    layerListFilter
+	listExtract   layerListExtract
+	replaceVals   layerReplaceValues
+	merge         layerMergeStrategy
 }
 
 type layerListFilter struct {
@@ -176,12 +186,14 @@ type layerReplaceValues struct {
 type includeMode string
 
 const (
+	transformKindMerge       = "merge"
 	transformKindListFilter  = "list_filter"
 	transformKindListExtract = "list_extract"
-	transformKindReplaceVals = "replace-values"
+	transformKindReplaceVals = "replace_values"
 
 	transformSourceFile  = "file"
 	transformSourceState = "state"
+	transformSourceLayer = "layer"
 
 	includeModeAny includeMode = "any"
 	includeModeAll includeMode = "all"
@@ -257,19 +269,17 @@ func (c *Compose) Run() (string, error) {
 			return "", fmt.Errorf("failed to read layer compose file: %s", err)
 		}
 
-		l, strategy, transforms, err := parseLayer(in)
+		l, operators, err := parseLayer(in)
 		if err != nil {
 			return "", fmt.Errorf("failed to parse layer compose file: %s", err)
 		}
 
-		for _, transform := range transforms {
-			l, err = c.applyLayerTransform(l, transform, b)
+		for _, operator := range operators {
+			l, b, err = c.applyLayerOperator(l, operator, b)
 			if err != nil {
-				return "", fmt.Errorf("failed to apply layer transform for %q: %w", layer, err)
+				return "", fmt.Errorf("failed to apply layer operator for %q: %w", layer, err)
 			}
 		}
-
-		b = mergeMapsWithStrategy(b, l, strategy, nil)
 	}
 
 	out, err := c.marshal(b)
@@ -354,91 +364,156 @@ func mergeValue(base interface{}, layer interface{}, strategy layerMergeStrategy
 	return layer
 }
 
-func parseLayer(in []byte) (map[string]interface{}, layerMergeStrategy, []layerTransform, error) {
+func parseLayer(in []byte) (map[string]interface{}, []layerTransform, error) {
 	docs, err := decodeYAMLDocuments(in)
 	if err != nil {
-		return nil, layerMergeStrategy{}, nil, err
+		return nil, nil, err
 	}
 
 	switch len(docs) {
 	case 0:
-		return map[string]interface{}{}, layerMergeStrategy{defaults: defaultMergeStrategy}, nil, nil
+		return map[string]interface{}{}, []layerTransform{defaultMergeOperator()}, nil
 	case 1:
 		data, err := decodeYAMLMap(docs[0])
 		if err != nil {
-			return nil, layerMergeStrategy{}, nil, err
+			return nil, nil, err
 		}
-		return data, layerMergeStrategy{defaults: defaultMergeStrategy}, nil, nil
+		return data, []layerTransform{defaultMergeOperator()}, nil
 	case 2:
 		meta, err := decodeLayerMetadata(docs[0])
 		if err != nil {
-			return nil, layerMergeStrategy{}, nil, err
+			return nil, nil, err
 		}
-		strategy, err := buildLayerMergeStrategy(meta)
+		operators, err := buildLayerOperators(meta)
 		if err != nil {
-			return nil, layerMergeStrategy{}, nil, err
-		}
-		transforms, err := buildLayerTransforms(meta)
-		if err != nil {
-			return nil, layerMergeStrategy{}, nil, err
+			return nil, nil, err
 		}
 		data, err := decodeYAMLMap(docs[1])
 		if err != nil {
-			return nil, layerMergeStrategy{}, nil, err
+			return nil, nil, err
 		}
-		return data, strategy, transforms, nil
+		return data, operators, nil
 	default:
-		return nil, layerMergeStrategy{}, nil, fmt.Errorf("expected at most two YAML documents (metadata and data), got %d", len(docs))
+		return nil, nil, fmt.Errorf("expected at most two YAML documents (metadata and data), got %d", len(docs))
 	}
 }
 
-func buildLayerTransforms(meta layerMetadata) ([]layerTransform, error) {
-	if meta.Transform != nil && len(meta.Transforms) > 0 {
-		return nil, fmt.Errorf("cannot specify both transform and transforms")
+func defaultMergeOperator() layerTransform {
+	return layerTransform{
+		kind:       transformKindMerge,
+		sourceFrom: transformSourceLayer,
+		merge: layerMergeStrategy{
+			defaults: defaultMergeStrategy,
+			paths:    map[string]mergeStrategy{},
+		},
+	}
+}
+
+func buildLayerOperators(meta layerMetadata) ([]layerTransform, error) {
+	if len(meta.Operators) == 0 {
+		return []layerTransform{defaultMergeOperator()}, nil
 	}
 
-	if meta.Transform != nil {
-		transform, err := buildLayerTransform(*meta.Transform, "transform")
+	operators := make([]layerTransform, 0, len(meta.Operators))
+	hasMerge := false
+	for i, opMeta := range meta.Operators {
+		fieldPrefix := fmt.Sprintf("operators[%d]", i)
+		op, err := buildLayerOperator(opMeta, fieldPrefix)
 		if err != nil {
 			return nil, err
 		}
-		return []layerTransform{transform}, nil
-	}
-
-	if len(meta.Transforms) == 0 {
-		return nil, nil
-	}
-
-	transforms := make([]layerTransform, 0, len(meta.Transforms))
-	for i, transformMeta := range meta.Transforms {
-		fieldPrefix := fmt.Sprintf("transforms[%d]", i)
-		transform, err := buildLayerTransform(transformMeta, fieldPrefix)
-		if err != nil {
-			return nil, err
+		if op.kind == transformKindMerge {
+			hasMerge = true
 		}
-		transforms = append(transforms, transform)
+		operators = append(operators, op)
+	}
+	if !hasMerge {
+		operators = append(operators, defaultMergeOperator())
 	}
 
-	return transforms, nil
+	return operators, nil
+}
+
+func buildLayerOperator(meta layerOperatorMetadata, fieldPrefix string) (layerTransform, error) {
+	if meta.Kind == "" {
+		return layerTransform{}, fmt.Errorf("invalid %s.kind %q: cannot be empty", fieldPrefix, meta.Kind)
+	}
+
+	if meta.Kind == transformKindMerge {
+		mergeOp, err := buildMergeOperator(meta, fieldPrefix)
+		if err != nil {
+			return layerTransform{}, err
+		}
+		return mergeOp, nil
+	}
+
+	transformMeta := layerTransformMetadata{
+		Kind:        meta.Kind,
+		Source:      meta.Source,
+		Target:      meta.Target,
+		ListFilter:  meta.ListFilter,
+		ListExtract: meta.ListExtract,
+		ReplaceVals: meta.ReplaceVals,
+	}
+	return buildLayerTransform(transformMeta, fieldPrefix)
+}
+
+func buildMergeOperator(meta layerOperatorMetadata, fieldPrefix string) (layerTransform, error) {
+	sourceFrom := meta.Source.From
+	if sourceFrom == "" {
+		sourceFrom = transformSourceLayer
+	}
+	if sourceFrom != transformSourceFile && sourceFrom != transformSourceState && sourceFrom != transformSourceLayer {
+		return layerTransform{}, fmt.Errorf("invalid %s.source.from %q: supported values: file, state, layer", fieldPrefix, meta.Source.From)
+	}
+	if sourceFrom == transformSourceFile && meta.Source.File == "" {
+		return layerTransform{}, fmt.Errorf("invalid %s.source.file: cannot be empty when source.from=file", fieldPrefix)
+	}
+	if sourceFrom != transformSourceFile && meta.Source.File != "" {
+		return layerTransform{}, fmt.Errorf("invalid %s.source.file: must be empty when source.from is not file", fieldPrefix)
+	}
+
+	strategy, err := buildLayerMergeStrategy(meta.Merge)
+	if err != nil {
+		return layerTransform{}, fmt.Errorf("invalid %s.merge: %w", fieldPrefix, err)
+	}
+
+	op := layerTransform{
+		kind:       transformKindMerge,
+		sourceFrom: sourceFrom,
+		sourceFile: meta.Source.File,
+		merge:      strategy,
+	}
+
+	if meta.Source.Path != "" {
+		sourcePath, err := splitDotPath(meta.Source.Path)
+		if err != nil {
+			return layerTransform{}, fmt.Errorf("invalid %s.source.path %q: %w", fieldPrefix, meta.Source.Path, err)
+		}
+		op.sourcePath = sourcePath
+		op.hasSourcePath = true
+	}
+
+	return op, nil
 }
 
 func buildLayerTransform(meta layerTransformMetadata, fieldPrefix string) (layerTransform, error) {
 	if meta.Kind != transformKindListFilter && meta.Kind != transformKindListExtract && meta.Kind != transformKindReplaceVals {
-		return layerTransform{}, fmt.Errorf("invalid %s.kind %q: supported values: list_filter, list_extract, replace-values", fieldPrefix, meta.Kind)
+		return layerTransform{}, fmt.Errorf("invalid %s.kind %q: supported values: list_filter, list_extract, replace_values", fieldPrefix, meta.Kind)
 	}
 
 	sourceFrom := meta.Source.From
 	if sourceFrom == "" {
 		sourceFrom = transformSourceFile
 	}
-	if sourceFrom != transformSourceFile && sourceFrom != transformSourceState {
-		return layerTransform{}, fmt.Errorf("invalid %s.source.from %q: supported values: file, state", fieldPrefix, meta.Source.From)
+	if sourceFrom != transformSourceFile && sourceFrom != transformSourceState && sourceFrom != transformSourceLayer {
+		return layerTransform{}, fmt.Errorf("invalid %s.source.from %q: supported values: file, state, layer", fieldPrefix, meta.Source.From)
 	}
 	if sourceFrom == transformSourceFile && meta.Source.File == "" {
 		return layerTransform{}, fmt.Errorf("invalid %s.source.file: cannot be empty when source.from=file", fieldPrefix)
 	}
-	if sourceFrom == transformSourceState && meta.Source.File != "" {
-		return layerTransform{}, fmt.Errorf("invalid %s.source.file: must be empty when source.from=state", fieldPrefix)
+	if sourceFrom != transformSourceFile && meta.Source.File != "" {
+		return layerTransform{}, fmt.Errorf("invalid %s.source.file: must be empty when source.from is not file", fieldPrefix)
 	}
 
 	sourcePath, err := splitDotPath(meta.Source.Path)
@@ -456,11 +531,12 @@ func buildLayerTransform(meta layerTransformMetadata, fieldPrefix string) (layer
 	}
 
 	transform := layerTransform{
-		kind:       meta.Kind,
-		sourceFrom: sourceFrom,
-		sourceFile: meta.Source.File,
-		sourcePath: sourcePath,
-		targetPath: targetPath,
+		kind:          meta.Kind,
+		sourceFrom:    sourceFrom,
+		sourceFile:    meta.Source.File,
+		sourcePath:    sourcePath,
+		hasSourcePath: true,
+		targetPath:    targetPath,
 	}
 
 	switch meta.Kind {
@@ -579,69 +655,85 @@ func compileRegexList(raw []string, fieldName string) ([]*regexp.Regexp, error) 
 	return out, nil
 }
 
-func (c *Compose) applyLayerTransform(layer map[string]interface{}, transform layerTransform, state map[string]interface{}) (map[string]interface{}, error) {
+func (c *Compose) applyLayerOperator(layer map[string]interface{}, operator layerTransform, state map[string]interface{}) (map[string]interface{}, map[string]interface{}, error) {
 	if layer == nil {
 		layer = map[string]interface{}{}
+	}
+	if state == nil {
+		state = map[string]interface{}{}
 	}
 
 	var sourceData interface{}
 	var err error
-	switch transform.sourceFrom {
+	switch operator.sourceFrom {
 	case transformSourceState:
 		sourceData = state
 	case transformSourceFile:
-		sourceData, err = c.readSourceYAML(transform.sourceFile)
+		sourceData, err = c.readSourceYAML(operator.sourceFile)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
+	case transformSourceLayer:
+		sourceData = layer
 	default:
-		return nil, fmt.Errorf("unsupported transform source.from %q", transform.sourceFrom)
+		return nil, nil, fmt.Errorf("unsupported operator source.from %q", operator.sourceFrom)
 	}
 
-	input, ok := getValueAtPath(sourceData, transform.sourcePath)
-	if !ok {
-		return nil, fmt.Errorf("source path %q not found", normalizePath(transform.sourcePath))
+	input := sourceData
+	if operator.hasSourcePath {
+		var ok bool
+		input, ok = getValueAtPath(sourceData, operator.sourcePath)
+		if !ok {
+			return nil, nil, fmt.Errorf("source path %q not found", normalizePath(operator.sourcePath))
+		}
 	}
 
 	var output interface{}
-	switch transform.kind {
+	switch operator.kind {
+	case transformKindMerge:
+		inputMap, ok := input.(map[string]interface{})
+		if !ok {
+			return nil, nil, fmt.Errorf("source path %q must resolve to an object", normalizePath(operator.sourcePath))
+		}
+		state = mergeMapsWithStrategy(state, inputMap, operator.merge, nil)
+		return layer, state, nil
 	case transformKindListFilter:
 		inputList, ok := input.([]interface{})
 		if !ok {
-			return nil, fmt.Errorf("source path %q must resolve to a list", normalizePath(transform.sourcePath))
+			return nil, nil, fmt.Errorf("source path %q must resolve to a list", normalizePath(operator.sourcePath))
 		}
-		output, err = applyListFilter(inputList, transform.listFilter)
+		output, err = applyListFilter(inputList, operator.listFilter)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 	case transformKindListExtract:
 		inputList, ok := input.([]interface{})
 		if !ok {
-			return nil, fmt.Errorf("source path %q must resolve to a list", normalizePath(transform.sourcePath))
+			return nil, nil, fmt.Errorf("source path %q must resolve to a list", normalizePath(operator.sourcePath))
 		}
-		output, err = applyListExtract(inputList, transform.listExtract)
+		output, err = applyListExtract(inputList, operator.listExtract)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 	case transformKindReplaceVals:
 		var originals []string
-		output, originals = applyReplaceValues(input, transform.replaceVals)
-		if transform.replaceVals.printOriginal {
+		output, originals = applyReplaceValues(input, operator.replaceVals)
+		if operator.replaceVals.printOriginal {
 			for _, original := range originals {
 				if _, werr := fmt.Fprintln(c.logOut, original); werr != nil {
-					return nil, fmt.Errorf("print replaced original value: %w", werr)
+					return nil, nil, fmt.Errorf("print replaced original value: %w", werr)
 				}
 			}
 		}
 	default:
-		return nil, fmt.Errorf("unsupported transform kind %q", transform.kind)
+		return nil, nil, fmt.Errorf("unsupported operator kind %q", operator.kind)
 	}
 
-	if err := setMapValueAtPath(layer, transform.targetPath, output); err != nil {
-		return nil, err
+	if err := setMapValueAtPath(layer, operator.targetPath, output); err != nil {
+		return nil, nil, err
 	}
 
-	return layer, nil
+	return layer, state, nil
 }
 
 func (c *Compose) readSourceYAML(rawPath string) (interface{}, error) {
@@ -895,6 +987,18 @@ func decodeYAMLMap(doc *yaml.Node) (map[string]interface{}, error) {
 }
 
 func decodeLayerMetadata(doc *yaml.Node) (layerMetadata, error) {
+	var raw map[string]interface{}
+	if err := doc.Decode(&raw); err != nil {
+		return layerMetadata{}, fmt.Errorf("failed to decode metadata document: %w", err)
+	}
+
+	forbidden := []string{"merge", "transform", "transforms"}
+	for _, key := range forbidden {
+		if _, ok := raw[key]; ok {
+			return layerMetadata{}, fmt.Errorf("legacy metadata field %q is not supported; use operators", key)
+		}
+	}
+
 	var meta layerMetadata
 	if err := doc.Decode(&meta); err != nil {
 		return layerMetadata{}, fmt.Errorf("failed to decode metadata document: %w", err)
@@ -902,19 +1006,19 @@ func decodeLayerMetadata(doc *yaml.Node) (layerMetadata, error) {
 	return meta, nil
 }
 
-func buildLayerMergeStrategy(meta layerMetadata) (layerMergeStrategy, error) {
+func buildLayerMergeStrategy(meta mergeMetadata) (layerMergeStrategy, error) {
 	strategy := layerMergeStrategy{
 		defaults: defaultMergeStrategy,
 		paths:    map[string]mergeStrategy{},
 	}
 
 	var err error
-	strategy.defaults, err = applyMetadataStrategy(strategy.defaults, meta.Merge.Defaults)
+	strategy.defaults, err = applyMetadataStrategy(strategy.defaults, meta.Defaults)
 	if err != nil {
 		return layerMergeStrategy{}, fmt.Errorf("invalid merge.defaults: %w", err)
 	}
 
-	for rawPath, override := range meta.Merge.Paths {
+	for rawPath, override := range meta.Paths {
 		normalizedPath, err := normalizeDotPath(rawPath)
 		if err != nil {
 			return layerMergeStrategy{}, fmt.Errorf("invalid merge.paths.%q: %w", rawPath, err)

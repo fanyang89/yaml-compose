@@ -200,14 +200,18 @@ func TestComposeListStrategiesByPath(t *testing.T) {
   append-list: [base-3]
   override-list: [base-4]
 `
-	layer := `merge:
-  paths:
-    app.prepend-list:
-      list: prepend
-    app.append-list:
-      list: append
-    app.override-list:
-      list: override
+	layer := `operators:
+  - kind: merge
+    source:
+      from: layer
+    merge:
+      paths:
+        app.prepend-list:
+          list: prepend
+        app.append-list:
+          list: append
+        app.override-list:
+          list: override
 ---
 app:
   prepend-list: [layer-1]
@@ -247,10 +251,14 @@ func TestComposeMapOverrideByPath(t *testing.T) {
     host: base
     pool: 10
 `
-	layer := `merge:
-  paths:
-    app.db:
-      map: override
+	layer := `operators:
+  - kind: merge
+    source:
+      from: layer
+    merge:
+      paths:
+        app.db:
+          map: override
 ---
 app:
   db:
@@ -286,12 +294,16 @@ func TestComposeDefaultsAndPathOverride(t *testing.T) {
 	base := `items: [base]
 priority-items: [base]
 `
-	layer := `merge:
-  defaults:
-    list: append
-  paths:
-    priority-items:
-      list: prepend
+	layer := `operators:
+  - kind: merge
+    source:
+      from: layer
+    merge:
+      defaults:
+        list: append
+      paths:
+        priority-items:
+          list: prepend
 ---
 items: [layer]
 priority-items: [layer]
@@ -325,10 +337,14 @@ func TestComposePathSupportsEscapedDotKey(t *testing.T) {
   db.main:
     ports: [5432]
 `
-	layer := `merge:
-  paths:
-    app.db\.main.ports:
-      list: append
+	layer := `operators:
+  - kind: merge
+    source:
+      from: layer
+    merge:
+      paths:
+        app.db\.main.ports:
+          list: append
 ---
 app:
   db.main:
@@ -362,9 +378,13 @@ func TestComposeReturnsErrorForInvalidMergeStrategy(t *testing.T) {
 
 	base := `items: [base]
 `
-	layer := `merge:
-  defaults:
-    list: invalid
+	layer := `operators:
+  - kind: merge
+    source:
+      from: layer
+    merge:
+      defaults:
+        list: invalid
 ---
 items: [layer]
 `
@@ -480,16 +500,16 @@ func TestComposeTransformListFilterStringList(t *testing.T) {
 	base := `app:
   backends: [base]
 `
-	layer := `transform:
-  kind: list_filter
-  source:
-    file: source.yaml
-    path: inventory.backends
-  target:
-    path: app.backends
-  list_filter:
-    include: ["prod-", "cn-"]
-    exclude: ["canary$"]
+	layer := `operators:
+  - kind: list_filter
+    source:
+      file: source.yaml
+      path: inventory.backends
+    target:
+      path: app.backends
+    list_filter:
+      include: ["prod-", "cn-"]
+      exclude: ["canary$"]
 ---
 app:
   backends: []
@@ -531,16 +551,16 @@ func TestComposeTransformListFilterObjectList(t *testing.T) {
 	base := `app:
   backends: []
 `
-	layer := `transform:
-  kind: list_filter
-  source:
-    file: source.yaml
-    path: inventory.backends
-  target:
-    path: app.backends
-  list_filter:
-    match_path: name
-    include: ["prod-"]
+	layer := `operators:
+  - kind: list_filter
+    source:
+      file: source.yaml
+      path: inventory.backends
+    target:
+      path: app.backends
+    list_filter:
+      match_path: name
+      include: ["prod-"]
 ---
 app:
   backends: []
@@ -589,13 +609,13 @@ func TestComposeTransformListFilterDefaultsTargetPathToSourcePath(t *testing.T) 
 	base := `inventory:
   backends: [base]
 `
-	layer := `transform:
-  kind: list_filter
-  source:
-    file: source.yaml
-    path: inventory.backends
-  list_filter:
-    include: ["prod-"]
+	layer := `operators:
+  - kind: list_filter
+    source:
+      file: source.yaml
+      path: inventory.backends
+    list_filter:
+      include: ["prod-"]
 ---
 inventory:
   backends: []
@@ -633,15 +653,15 @@ func TestComposeTransformListFilterReturnsErrorWhenObjectMatchPathMissing(t *tes
 	base := `app:
   backends: []
 `
-	layer := `transform:
-  kind: list_filter
-  source:
-    file: source.yaml
-    path: inventory.backends
-  target:
-    path: app.backends
-  list_filter:
-    match_path: name
+	layer := `operators:
+  - kind: list_filter
+    source:
+      file: source.yaml
+      path: inventory.backends
+    target:
+      path: app.backends
+    list_filter:
+      match_path: name
 ---
 app:
   backends: []
@@ -674,15 +694,15 @@ func TestComposeTransformListFilterReturnsErrorWhenObjectListHasNoMatchPath(t *t
 	base := `app:
   backends: []
 `
-	layer := `transform:
-  kind: list_filter
-  source:
-    file: source.yaml
-    path: inventory.backends
-  target:
-    path: app.backends
-  list_filter:
-    include: ["prod-"]
+	layer := `operators:
+  - kind: list_filter
+    source:
+      file: source.yaml
+      path: inventory.backends
+    target:
+      path: app.backends
+    list_filter:
+      include: ["prod-"]
 ---
 app:
   backends: []
@@ -715,13 +735,13 @@ func TestComposeTransformListFilterReturnsErrorWhenSourcePathIsNotList(t *testin
 	base := `app:
   backends: []
 `
-	layer := `transform:
-  kind: list_filter
-  source:
-    file: source.yaml
-    path: inventory.backends
-  target:
-    path: app.backends
+	layer := `operators:
+  - kind: list_filter
+    source:
+      file: source.yaml
+      path: inventory.backends
+    target:
+      path: app.backends
 ---
 app:
   backends: []
@@ -754,7 +774,7 @@ func TestComposeSupportsMultipleTransformsInSingleLayer(t *testing.T) {
   backend-names: []
   backends: []
 `
-	layer := `transforms:
+	layer := `operators:
   - kind: list_extract
     source:
       file: source.yaml
@@ -810,7 +830,7 @@ app:
 	require.Len(backends, 2)
 }
 
-func TestComposeReturnsErrorWhenTransformAndTransformsBothConfigured(t *testing.T) {
+func TestComposeReturnsErrorForUnknownOperatorKind(t *testing.T) {
 	require := require.New(t)
 
 	c := compose.NewMock("base.yaml", []string{"1-layer.yaml"})
@@ -819,24 +839,10 @@ func TestComposeReturnsErrorWhenTransformAndTransformsBothConfigured(t *testing.
 	base := `app:
   backend-names: []
 `
-	layer := `transform:
-  kind: list_extract
-  source:
-    file: source.yaml
-    path: inventory.backends
-  target:
-    path: app.backend-names
-  list_extract:
-    extract_path: name
-transforms:
-  - kind: list_filter
+	layer := `operators:
+  - kind: unknown
     source:
-      file: source.yaml
-      path: inventory.backends
-    target:
-      path: app.backends
-    list_filter:
-      match_path: name
+      from: layer
 ---
 app:
   backend-names: []
@@ -847,12 +853,9 @@ app:
 	require.NoError(err)
 	err = fs.WriteFile("base.yaml.d/1-layer.yaml", []byte(layer), 0755)
 	require.NoError(err)
-	err = fs.WriteFile("source.yaml", []byte("inventory:\n  backends: []\n"), 0755)
-	require.NoError(err)
-
 	_, err = c.Run()
 	require.Error(err)
-	require.Contains(err.Error(), "cannot specify both transform and transforms")
+	require.Contains(err.Error(), "supported values")
 }
 
 func TestComposeTransformListExtractBuildsStringListFromObjectList(t *testing.T) {
@@ -864,17 +867,17 @@ func TestComposeTransformListExtractBuildsStringListFromObjectList(t *testing.T)
 	base := `app:
   backend-names: []
 `
-	layer := `transform:
-  kind: list_extract
-  source:
-    file: source.yaml
-    path: inventory.backends
-  target:
-    path: app.backend-names
-  list_extract:
-    extract_path: meta.name
-    include: ["prod-"]
-    exclude: ["-canary$"]
+	layer := `operators:
+  - kind: list_extract
+    source:
+      file: source.yaml
+      path: inventory.backends
+    target:
+      path: app.backend-names
+    list_extract:
+      extract_path: meta.name
+      include: ["prod-"]
+      exclude: ["-canary$"]
 ---
 app:
   backend-names: []
@@ -932,15 +935,15 @@ func TestComposeTransformListExtractSupportsSourceFromState(t *testing.T) {
     - meta:
         name: prod-b
 `
-	secondLayer := `transform:
-  kind: list_extract
-  source:
-    from: state
-    path: app.backends
-  target:
-    path: app.backend-names
-  list_extract:
-    extract_path: meta.name
+	secondLayer := `operators:
+  - kind: list_extract
+    source:
+      from: state
+      path: app.backends
+    target:
+      path: app.backend-names
+    list_extract:
+      extract_path: meta.name
 ---
 app:
   backend-names: []
@@ -976,15 +979,15 @@ func TestComposeTransformListExtractWritesToArrayItemTargetPath(t *testing.T) {
   backends:
     - names: []
 `
-	layer := `transform:
-  kind: list_extract
-  source:
-    file: source.yaml
-    path: inventory.backends
-  target:
-    path: app.backends[0].names
-  list_extract:
-    extract_path: name
+	layer := `operators:
+  - kind: list_extract
+    source:
+      file: source.yaml
+      path: inventory.backends
+    target:
+      path: app.backends[0].names
+    list_extract:
+      extract_path: name
 ---
 app:
   backends:
@@ -1031,15 +1034,15 @@ func TestComposeTransformListExtractWritesToSelectorTargetPath(t *testing.T) {
     - name: worker
       names: []
 `
-	layer := `transform:
-  kind: list_extract
-  source:
-    file: source.yaml
-    path: inventory.backends
-  target:
-    path: app.backends[name=api].names
-  list_extract:
-    extract_path: name
+	layer := `operators:
+  - kind: list_extract
+    source:
+      file: source.yaml
+      path: inventory.backends
+    target:
+      path: app.backends[name=api].names
+    list_extract:
+      extract_path: name
 ---
 app:
   backends:
@@ -1090,15 +1093,15 @@ func TestComposeTransformListExtractWritesToQuotedSelectorTargetPath(t *testing.
   - name: xyz
     ports: []
 `
-	layer := `transform:
-  kind: list_extract
-  source:
-    file: source.yaml
-    path: inventory.backends
-  target:
-    path: groups[name="abc 123"].ports
-  list_extract:
-    extract_path: port
+	layer := `operators:
+  - kind: list_extract
+    source:
+      file: source.yaml
+      path: inventory.backends
+    target:
+      path: groups[name="abc 123"].ports
+    list_extract:
+      extract_path: port
 ---
 groups:
   - name: abc 123
@@ -1148,15 +1151,15 @@ func TestComposeTransformSelectorTargetReturnsErrorWhenNotUnique(t *testing.T) {
     - name: api
       names: []
 `
-	layer := `transform:
-  kind: list_extract
-  source:
-    file: source.yaml
-    path: inventory.backends
-  target:
-    path: app.backends[name=api].names
-  list_extract:
-    extract_path: name
+	layer := `operators:
+  - kind: list_extract
+    source:
+      file: source.yaml
+      path: inventory.backends
+    target:
+      path: app.backends[name=api].names
+    list_extract:
+      extract_path: name
 ---
 app:
   backends:
@@ -1195,15 +1198,15 @@ func TestComposeTransformSelectorTargetReturnsErrorWhenNoMatch(t *testing.T) {
     - name: worker
       names: []
 `
-	layer := `transform:
-  kind: list_extract
-  source:
-    file: source.yaml
-    path: inventory.backends
-  target:
-    path: app.backends[name=api].names
-  list_extract:
-    extract_path: name
+	layer := `operators:
+  - kind: list_extract
+    source:
+      file: source.yaml
+      path: inventory.backends
+    target:
+      path: app.backends[name=api].names
+    list_extract:
+      extract_path: name
 ---
 app:
   backends:
@@ -1239,15 +1242,15 @@ func TestComposeTransformListExtractReturnsErrorWhenArrayTargetIndexOutOfRange(t
   backends:
     - names: []
 `
-	layer := `transform:
-  kind: list_extract
-  source:
-    file: source.yaml
-    path: inventory.backends
-  target:
-    path: app.backends.1.names
-  list_extract:
-    extract_path: name
+	layer := `operators:
+  - kind: list_extract
+    source:
+      file: source.yaml
+      path: inventory.backends
+    target:
+      path: app.backends.1.names
+    list_extract:
+      extract_path: name
 ---
 app:
   backends:
@@ -1281,15 +1284,15 @@ func TestComposeTransformListExtractReturnsErrorWhenExtractPathMissing(t *testin
 	base := `app:
   backend-names: []
 `
-	layer := `transform:
-  kind: list_extract
-  source:
-    file: source.yaml
-    path: inventory.backends
-  target:
-    path: app.backend-names
-  list_extract:
-    extract_path: meta.name
+	layer := `operators:
+  - kind: list_extract
+    source:
+      file: source.yaml
+      path: inventory.backends
+    target:
+      path: app.backend-names
+    list_extract:
+      extract_path: meta.name
 ---
 app:
   backend-names: []
@@ -1323,15 +1326,15 @@ func TestComposeTransformListExtractReturnsErrorWhenExtractPathIsNotString(t *te
 	base := `app:
   backend-names: []
 `
-	layer := `transform:
-  kind: list_extract
-  source:
-    file: source.yaml
-    path: inventory.backends
-  target:
-    path: app.backend-names
-  list_extract:
-    extract_path: meta.name
+	layer := `operators:
+  - kind: list_extract
+    source:
+      file: source.yaml
+      path: inventory.backends
+    target:
+      path: app.backend-names
+    list_extract:
+      extract_path: meta.name
 ---
 app:
   backend-names: []
@@ -1365,16 +1368,16 @@ func TestComposeTransformListExtractReturnsErrorForInvalidIncludeMode(t *testing
 	base := `app:
   backend-names: []
 `
-	layer := `transform:
-  kind: list_extract
-  source:
-    file: source.yaml
-    path: inventory.backends
-  target:
-    path: app.backend-names
-  list_extract:
-    extract_path: meta.name
-    include_mode: invalid
+	layer := `operators:
+  - kind: list_extract
+    source:
+      file: source.yaml
+      path: inventory.backends
+    target:
+      path: app.backend-names
+    list_extract:
+      extract_path: meta.name
+      include_mode: invalid
 ---
 app:
   backend-names: []
@@ -1396,7 +1399,7 @@ app:
 
 	_, err = c.Run()
 	require.Error(err)
-	require.Contains(err.Error(), "invalid transform.list_extract.include_mode")
+	require.Contains(err.Error(), "list_extract.include_mode")
 }
 
 func TestComposeTransformReplaceValuesSupportsStringSource(t *testing.T) {
@@ -1408,16 +1411,16 @@ func TestComposeTransformReplaceValuesSupportsStringSource(t *testing.T) {
 	base := `app:
   url: http://foo.example
 `
-	layer := `transform:
-  kind: replace-values
-  source:
-    from: state
-    path: app.url
-  target:
-    path: app.url
-  replace_values:
-    old: foo
-    new: bar
+	layer := `operators:
+  - kind: replace_values
+    source:
+      from: state
+      path: app.url
+    target:
+      path: app.url
+    replace_values:
+      old: foo
+      new: bar
 ---
 app: {}
 `
@@ -1454,17 +1457,17 @@ func TestComposeTransformReplaceValuesNonRecursiveOnlyReplacesTopLevelValues(t *
     arr: [foo, {note: foo}]
     foo-key: keep
 `
-	layer := `transform:
-  kind: replace-values
-  source:
-    from: state
-    path: app.labels
-  target:
-    path: app.labels
-  replace_values:
-    old: foo
-    new: bar
-    recursive: false
+	layer := `operators:
+  - kind: replace_values
+    source:
+      from: state
+      path: app.labels
+    target:
+      path: app.labels
+    replace_values:
+      old: foo
+      new: bar
+      recursive: false
 ---
 app: {}
 `
@@ -1511,17 +1514,17 @@ func TestComposeTransformReplaceValuesRecursiveReplacesNestedAndArrayValues(t *t
       text: foo-c
     keep-key: x
 `
-	layer := `transform:
-  kind: replace-values
-  source:
-    from: state
-    path: app.payload
-  target:
-    path: app.payload
-  replace_values:
-    old: foo
-    new: bar
-    recursive: true
+	layer := `operators:
+  - kind: replace_values
+    source:
+      from: state
+      path: app.payload
+    target:
+      path: app.payload
+    replace_values:
+      old: foo
+      new: bar
+      recursive: true
 ---
 app: {}
 `
@@ -1559,16 +1562,16 @@ func TestComposeTransformReplaceValuesReturnsErrorWhenOldEmpty(t *testing.T) {
 	base := `app:
   url: http://foo.example
 `
-	layer := `transform:
-  kind: replace-values
-  source:
-    from: state
-    path: app.url
-  target:
-    path: app.url
-  replace_values:
-    old: ""
-    new: bar
+	layer := `operators:
+  - kind: replace_values
+    source:
+      from: state
+      path: app.url
+    target:
+      path: app.url
+    replace_values:
+      old: ""
+      new: bar
 ---
 app: {}
 `
@@ -1597,18 +1600,18 @@ func TestComposeTransformReplaceValuesPrintsOriginalValuesWhenEnabled(t *testing
     two: foo-b
     three: keep
 `
-	layer := `transform:
-  kind: replace-values
-  source:
-    from: state
-    path: app.payload
-  target:
-    path: app.payload
-  replace_values:
-    old: foo
-    new: bar
-    recursive: false
-    print_original: true
+	layer := `operators:
+  - kind: replace_values
+    source:
+      from: state
+      path: app.payload
+    target:
+      path: app.payload
+    replace_values:
+      old: foo
+      new: bar
+      recursive: false
+      print_original: true
 ---
 app: {}
 `
@@ -1641,4 +1644,140 @@ func TestComposeOutputUsesTwoSpaceIndentForNestedLists(t *testing.T) {
 	out, err := c.Run()
 	require.NoError(err)
 	require.Contains(out, "ports:\n    - 5432\n")
+}
+
+func TestComposeOperatorsMetadataSupportsTransformThenMerge(t *testing.T) {
+	require := require.New(t)
+
+	c := compose.NewMock("base.yaml", []string{"1-layer.yaml"})
+	fs := c.GetFilesystem()
+
+	base := `app:
+  backend-names: []
+`
+	layer := `operators:
+  - kind: list_extract
+    source:
+      from: file
+      file: source.yaml
+      path: inventory.backends
+    target:
+      path: app.backend-names
+    list_extract:
+      extract_path: name
+      include: ["prod-"]
+  - kind: merge
+    source:
+      from: layer
+---
+app:
+  backend-names: []
+`
+	source := `inventory:
+  backends:
+    - name: prod-a
+    - name: dev-a
+    - name: prod-b
+`
+
+	err := fs.WriteFile("base.yaml", []byte(base), 0755)
+	require.NoError(err)
+	err = fs.Mkdir("base.yaml.d", 0755)
+	require.NoError(err)
+	err = fs.WriteFile("base.yaml.d/1-layer.yaml", []byte(layer), 0755)
+	require.NoError(err)
+	err = fs.WriteFile("source.yaml", []byte(source), 0755)
+	require.NoError(err)
+
+	out, err := c.Run()
+	require.NoError(err)
+
+	var got map[string]interface{}
+	err = yaml.Unmarshal([]byte(out), &got)
+	require.NoError(err)
+
+	app := got["app"].(map[string]interface{})
+	require.Equal([]interface{}{"prod-a", "prod-b"}, app["backend-names"])
+}
+
+func TestComposeOperatorsCanInterleaveMergeAndStateTransforms(t *testing.T) {
+	require := require.New(t)
+
+	c := compose.NewMock("base.yaml", []string{"1-layer.yaml"})
+	fs := c.GetFilesystem()
+
+	base := `app:
+  url: http://base.example
+`
+	layer := `operators:
+  - kind: merge
+    source:
+      from: layer
+  - kind: replace_values
+    source:
+      from: state
+      path: app.url
+    target:
+      path: app.url
+    replace_values:
+      old: foo
+      new: bar
+  - kind: merge
+    source:
+      from: layer
+---
+app:
+  url: http://foo.example
+`
+
+	err := fs.WriteFile("base.yaml", []byte(base), 0755)
+	require.NoError(err)
+	err = fs.Mkdir("base.yaml.d", 0755)
+	require.NoError(err)
+	err = fs.WriteFile("base.yaml.d/1-layer.yaml", []byte(layer), 0755)
+	require.NoError(err)
+
+	out, err := c.Run()
+	require.NoError(err)
+
+	var got map[string]interface{}
+	err = yaml.Unmarshal([]byte(out), &got)
+	require.NoError(err)
+
+	app := got["app"].(map[string]interface{})
+	require.Equal("http://bar.example", app["url"])
+}
+
+func TestComposeReturnsErrorForLegacyMetadataField(t *testing.T) {
+	require := require.New(t)
+
+	c := compose.NewMock("base.yaml", []string{"1-layer.yaml"})
+	fs := c.GetFilesystem()
+
+	base := "app: {}\n"
+	layer := `transform:
+  kind: replace_values
+  source:
+    from: state
+    path: app.url
+  target:
+    path: app.url
+  replace_values:
+    old: foo
+    new: bar
+---
+app:
+  url: http://foo.example
+`
+
+	err := fs.WriteFile("base.yaml", []byte(base), 0755)
+	require.NoError(err)
+	err = fs.Mkdir("base.yaml.d", 0755)
+	require.NoError(err)
+	err = fs.WriteFile("base.yaml.d/1-layer.yaml", []byte(layer), 0755)
+	require.NoError(err)
+
+	_, err = c.Run()
+	require.Error(err)
+	require.Contains(err.Error(), "legacy metadata field")
 }
