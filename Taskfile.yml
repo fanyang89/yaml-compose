@@ -1,3 +1,5 @@
+# yaml-language-server: $schema=https://taskfile.dev/schema.json
+
 version: "3"
 
 tasks:
@@ -17,3 +19,8 @@ tasks:
       - build
     cmds:
       - go install .
+
+  fmt:
+    desc: Format code
+    cmds:
+      - go fmt ./...
