@@ -2,6 +2,7 @@ package compose_test
 
 import (
 	"bytes"
+	"os"
 	"path"
 	"sort"
 	"testing"
@@ -91,6 +92,35 @@ var dYAML = `french-hens: [4,5,6]`
 
 var eYAML = ``
 
+type testFS interface {
+	WriteFile(name string, data []byte, perm os.FileMode) error
+	Mkdir(name string, perm os.FileMode) error
+	MkdirAll(path string, perm os.FileMode) error
+}
+
+func writeFile(t *testing.T, fs testFS, filePath string, content string) {
+	t.Helper()
+	require.NoError(t, fs.WriteFile(filePath, []byte(content), 0755))
+}
+
+func ensureDir(t *testing.T, fs testFS, dirPath string) {
+	t.Helper()
+	require.NoError(t, fs.MkdirAll(dirPath, 0755))
+}
+
+func writeBaseFile(t *testing.T, fs testFS, basePath string, content string) string {
+	t.Helper()
+	writeFile(t, fs, basePath, content)
+	baseDir := basePath + ".d"
+	ensureDir(t, fs, baseDir)
+	return baseDir
+}
+
+func writeLayerFile(t *testing.T, fs testFS, baseDir string, layerName string, content string) {
+	t.Helper()
+	writeFile(t, fs, path.Join(baseDir, layerName), content)
+}
+
 func TestCompose(t *testing.T) {
 	require := require.New(t)
 
@@ -100,20 +130,11 @@ func TestCompose(t *testing.T) {
 		"3-e.yaml",
 	})
 
-	base := "base.yaml"
-	baseDir := base + ".d"
 	fs := c.GetFilesystem()
-	err := fs.WriteFile(base, []byte(baseYAML), 0755)
-	require.NoErrorf(err, "write yaml")
-	err = fs.Mkdir(baseDir, 0755)
-	require.NoErrorf(err, "create dir")
-
-	err = fs.WriteFile(path.Join(baseDir, "1-c.yaml"), []byte(cYAML), 0755)
-	require.NoErrorf(err, "write yaml")
-	err = fs.WriteFile(path.Join(baseDir, "2-d.yaml"), []byte(dYAML), 0755)
-	require.NoErrorf(err, "write yaml")
-	err = fs.WriteFile(path.Join(baseDir, "3-e.yaml"), []byte(eYAML), 0755)
-	require.NoErrorf(err, "write yaml")
+	baseDir := writeBaseFile(t, fs, "base.yaml", baseYAML)
+	writeLayerFile(t, fs, baseDir, "1-c.yaml", cYAML)
+	writeLayerFile(t, fs, baseDir, "2-d.yaml", dYAML)
+	writeLayerFile(t, fs, baseDir, "3-e.yaml", eYAML)
 
 	r, err := c.Run()
 	require.NoError(err)
@@ -132,7 +153,7 @@ func TestComposeDeepMergeWithListOverrideAndNull(t *testing.T) {
 	c := compose.NewMock("base.yaml", []string{"1-layer.yaml"})
 	fs := c.GetFilesystem()
 
-	base := `app:
+	baseDir := writeBaseFile(t, fs, "base.yaml", `app:
   db:
     host: base
     pool: 10
@@ -140,7 +161,7 @@ func TestComposeDeepMergeWithListOverrideAndNull(t *testing.T) {
       - 5432
 feature: true
 keep: value
-`
+`)
 	layer := `app:
   db:
     host: layer
@@ -148,13 +169,7 @@ keep: value
       - 5433
 feature: null
 `
-
-	err := fs.WriteFile("base.yaml", []byte(base), 0755)
-	require.NoError(err)
-	err = fs.Mkdir("base.yaml.d", 0755)
-	require.NoError(err)
-	err = fs.WriteFile("base.yaml.d/1-layer.yaml", []byte(layer), 0755)
-	require.NoError(err)
+	writeLayerFile(t, fs, baseDir, "1-layer.yaml", layer)
 
 	out, err := c.Run()
 	require.NoError(err)
@@ -177,14 +192,10 @@ func TestComposeReturnsErrorForInvalidLayerName(t *testing.T) {
 
 	c := compose.NewMock("base.yaml", []string{"bad.yaml"})
 	fs := c.GetFilesystem()
-	err := fs.WriteFile("base.yaml", []byte(baseYAML), 0755)
-	require.NoError(err)
-	err = fs.Mkdir("base.yaml.d", 0755)
-	require.NoError(err)
-	err = fs.WriteFile("base.yaml.d/bad.yaml", []byte("xmas: false\n"), 0755)
-	require.NoError(err)
+	baseDir := writeBaseFile(t, fs, "base.yaml", baseYAML)
+	writeLayerFile(t, fs, baseDir, "bad.yaml", "xmas: false\n")
 
-	_, err = c.Run()
+	_, err := c.Run()
 	require.Error(err)
 	require.Contains(err.Error(), "invalid layer file name")
 }
@@ -195,11 +206,11 @@ func TestComposeListStrategiesByPath(t *testing.T) {
 	c := compose.NewMock("base.yaml", []string{"1-layer.yaml"})
 	fs := c.GetFilesystem()
 
-	base := `app:
+	baseDir := writeBaseFile(t, fs, "base.yaml", `app:
   prepend-list: [base-1, base-2]
   append-list: [base-3]
   override-list: [base-4]
-`
+`)
 	layer := `operators:
   - kind: merge
     source:
@@ -218,13 +229,7 @@ app:
   append-list: [layer-2]
   override-list: [layer-3]
 `
-
-	err := fs.WriteFile("base.yaml", []byte(base), 0755)
-	require.NoError(err)
-	err = fs.Mkdir("base.yaml.d", 0755)
-	require.NoError(err)
-	err = fs.WriteFile("base.yaml.d/1-layer.yaml", []byte(layer), 0755)
-	require.NoError(err)
+	writeLayerFile(t, fs, baseDir, "1-layer.yaml", layer)
 
 	out, err := c.Run()
 	require.NoError(err)
@@ -246,11 +251,11 @@ func TestComposeMapOverrideByPath(t *testing.T) {
 	c := compose.NewMock("base.yaml", []string{"1-layer.yaml"})
 	fs := c.GetFilesystem()
 
-	base := `app:
+	baseDir := writeBaseFile(t, fs, "base.yaml", `app:
   db:
     host: base
     pool: 10
-`
+`)
 	layer := `operators:
   - kind: merge
     source:
@@ -264,13 +269,7 @@ app:
   db:
     host: layer
 `
-
-	err := fs.WriteFile("base.yaml", []byte(base), 0755)
-	require.NoError(err)
-	err = fs.Mkdir("base.yaml.d", 0755)
-	require.NoError(err)
-	err = fs.WriteFile("base.yaml.d/1-layer.yaml", []byte(layer), 0755)
-	require.NoError(err)
+	writeLayerFile(t, fs, baseDir, "1-layer.yaml", layer)
 
 	out, err := c.Run()
 	require.NoError(err)
@@ -291,9 +290,9 @@ func TestComposeDefaultsAndPathOverride(t *testing.T) {
 	c := compose.NewMock("base.yaml", []string{"1-layer.yaml"})
 	fs := c.GetFilesystem()
 
-	base := `items: [base]
+	baseDir := writeBaseFile(t, fs, "base.yaml", `items: [base]
 priority-items: [base]
-`
+`)
 	layer := `operators:
   - kind: merge
     source:
@@ -308,13 +307,7 @@ priority-items: [base]
 items: [layer]
 priority-items: [layer]
 `
-
-	err := fs.WriteFile("base.yaml", []byte(base), 0755)
-	require.NoError(err)
-	err = fs.Mkdir("base.yaml.d", 0755)
-	require.NoError(err)
-	err = fs.WriteFile("base.yaml.d/1-layer.yaml", []byte(layer), 0755)
-	require.NoError(err)
+	writeLayerFile(t, fs, baseDir, "1-layer.yaml", layer)
 
 	out, err := c.Run()
 	require.NoError(err)
@@ -333,10 +326,10 @@ func TestComposePathSupportsEscapedDotKey(t *testing.T) {
 	c := compose.NewMock("base.yaml", []string{"1-layer.yaml"})
 	fs := c.GetFilesystem()
 
-	base := `app:
+	baseDir := writeBaseFile(t, fs, "base.yaml", `app:
   db.main:
     ports: [5432]
-`
+`)
 	layer := `operators:
   - kind: merge
     source:
@@ -350,13 +343,7 @@ app:
   db.main:
     ports: [5433]
 `
-
-	err := fs.WriteFile("base.yaml", []byte(base), 0755)
-	require.NoError(err)
-	err = fs.Mkdir("base.yaml.d", 0755)
-	require.NoError(err)
-	err = fs.WriteFile("base.yaml.d/1-layer.yaml", []byte(layer), 0755)
-	require.NoError(err)
+	writeLayerFile(t, fs, baseDir, "1-layer.yaml", layer)
 
 	out, err := c.Run()
 	require.NoError(err)
@@ -389,14 +376,10 @@ func TestComposeReturnsErrorForInvalidMergeStrategy(t *testing.T) {
 items: [layer]
 `
 
-	err := fs.WriteFile("base.yaml", []byte(base), 0755)
-	require.NoError(err)
-	err = fs.Mkdir("base.yaml.d", 0755)
-	require.NoError(err)
-	err = fs.WriteFile("base.yaml.d/1-layer.yaml", []byte(layer), 0755)
-	require.NoError(err)
+	baseDir := writeBaseFile(t, fs, "base.yaml", base)
+	writeLayerFile(t, fs, baseDir, "1-layer.yaml", layer)
 
-	_, err = c.Run()
+	_, err := c.Run()
 	require.Error(err)
 	require.Contains(err.Error(), "unsupported list strategy")
 
@@ -407,14 +390,10 @@ func TestComposeReturnsErrorForNonNumericLayerPrefix(t *testing.T) {
 
 	c := compose.NewMock("base.yaml", []string{"a-layer.yaml"})
 	fs := c.GetFilesystem()
-	err := fs.WriteFile("base.yaml", []byte(baseYAML), 0755)
-	require.NoError(err)
-	err = fs.Mkdir("base.yaml.d", 0755)
-	require.NoError(err)
-	err = fs.WriteFile("base.yaml.d/a-layer.yaml", []byte("xmas: false\n"), 0755)
-	require.NoError(err)
+	baseDir := writeBaseFile(t, fs, "base.yaml", baseYAML)
+	writeLayerFile(t, fs, baseDir, "a-layer.yaml", "xmas: false\n")
 
-	_, err = c.Run()
+	_, err := c.Run()
 	require.Error(err)
 	require.Contains(err.Error(), "expected numeric order prefix")
 }
@@ -433,10 +412,9 @@ func TestComposeReturnsErrorWhenBaseYAMLIsInvalid(t *testing.T) {
 
 	c := compose.NewMock("base.yaml", nil)
 	fs := c.GetFilesystem()
-	err := fs.WriteFile("base.yaml", []byte(":"), 0755)
-	require.NoError(err)
+	writeFile(t, fs, "base.yaml", ":")
 
-	_, err = c.Run()
+	_, err := c.Run()
 	require.Error(err)
 	require.Contains(err.Error(), "failed to parse base compose file")
 }
@@ -446,12 +424,9 @@ func TestComposeReturnsErrorWhenLayerReadFails(t *testing.T) {
 
 	c := compose.NewMock("base.yaml", []string{"1-layer.yaml"})
 	fs := c.GetFilesystem()
-	err := fs.WriteFile("base.yaml", []byte(baseYAML), 0755)
-	require.NoError(err)
-	err = fs.Mkdir("base.yaml.d", 0755)
-	require.NoError(err)
+	writeBaseFile(t, fs, "base.yaml", baseYAML)
 
-	_, err = c.Run()
+	_, err := c.Run()
 	require.Error(err)
 	require.Contains(err.Error(), "failed to read layer compose file")
 }
@@ -461,14 +436,10 @@ func TestComposeReturnsErrorWhenLayerYAMLIsInvalid(t *testing.T) {
 
 	c := compose.NewMock("base.yaml", []string{"1-layer.yaml"})
 	fs := c.GetFilesystem()
-	err := fs.WriteFile("base.yaml", []byte(baseYAML), 0755)
-	require.NoError(err)
-	err = fs.Mkdir("base.yaml.d", 0755)
-	require.NoError(err)
-	err = fs.WriteFile("base.yaml.d/1-layer.yaml", []byte("a: [1,2"), 0755)
-	require.NoError(err)
+	baseDir := writeBaseFile(t, fs, "base.yaml", baseYAML)
+	writeLayerFile(t, fs, baseDir, "1-layer.yaml", "a: [1,2")
 
-	_, err = c.Run()
+	_, err := c.Run()
 	require.Error(err)
 	require.Contains(err.Error(), "failed to parse layer compose file")
 }
@@ -478,8 +449,7 @@ func TestComposeWithoutLayersReturnsBaseContent(t *testing.T) {
 
 	c := compose.NewMock("base.yaml", nil)
 	fs := c.GetFilesystem()
-	err := fs.WriteFile("base.yaml", []byte(baseYAML), 0755)
-	require.NoError(err)
+	writeFile(t, fs, "base.yaml", baseYAML)
 
 	out, err := c.Run()
 	require.NoError(err)
@@ -521,15 +491,10 @@ app:
     - cn-main
     - dev-main
 `
-
-	err := fs.MkdirAll("configs/base.yaml.d", 0755)
-	require.NoError(err)
-	err = fs.WriteFile("configs/base.yaml", []byte(base), 0755)
-	require.NoError(err)
-	err = fs.WriteFile("configs/base.yaml.d/1-layer.yaml", []byte(layer), 0755)
-	require.NoError(err)
-	err = fs.WriteFile("configs/source.yaml", []byte(source), 0755)
-	require.NoError(err)
+	ensureDir(t, fs, "configs/base.yaml.d")
+	writeFile(t, fs, "configs/base.yaml", base)
+	writeFile(t, fs, "configs/base.yaml.d/1-layer.yaml", layer)
+	writeFile(t, fs, "configs/source.yaml", source)
 
 	out, err := c.Run()
 	require.NoError(err)
@@ -574,15 +539,9 @@ app:
     - name: prod-b
       url: https://b
 `
-
-	err := fs.WriteFile("base.yaml", []byte(base), 0755)
-	require.NoError(err)
-	err = fs.Mkdir("base.yaml.d", 0755)
-	require.NoError(err)
-	err = fs.WriteFile("base.yaml.d/1-layer.yaml", []byte(layer), 0755)
-	require.NoError(err)
-	err = fs.WriteFile("source.yaml", []byte(source), 0755)
-	require.NoError(err)
+	baseDir := writeBaseFile(t, fs, "base.yaml", base)
+	writeLayerFile(t, fs, baseDir, "1-layer.yaml", layer)
+	writeFile(t, fs, "source.yaml", source)
 
 	out, err := c.Run()
 	require.NoError(err)
@@ -623,15 +582,9 @@ inventory:
 	source := `inventory:
   backends: [prod-a, dev-a]
 `
-
-	err := fs.WriteFile("base.yaml", []byte(base), 0755)
-	require.NoError(err)
-	err = fs.Mkdir("base.yaml.d", 0755)
-	require.NoError(err)
-	err = fs.WriteFile("base.yaml.d/1-layer.yaml", []byte(layer), 0755)
-	require.NoError(err)
-	err = fs.WriteFile("source.yaml", []byte(source), 0755)
-	require.NoError(err)
+	baseDir := writeBaseFile(t, fs, "base.yaml", base)
+	writeLayerFile(t, fs, baseDir, "1-layer.yaml", layer)
+	writeFile(t, fs, "source.yaml", source)
 
 	out, err := c.Run()
 	require.NoError(err)
@@ -670,17 +623,11 @@ app:
   backends:
     - url: https://a
 `
+	baseDir := writeBaseFile(t, fs, "base.yaml", base)
+	writeLayerFile(t, fs, baseDir, "1-layer.yaml", layer)
+	writeFile(t, fs, "source.yaml", source)
 
-	err := fs.WriteFile("base.yaml", []byte(base), 0755)
-	require.NoError(err)
-	err = fs.Mkdir("base.yaml.d", 0755)
-	require.NoError(err)
-	err = fs.WriteFile("base.yaml.d/1-layer.yaml", []byte(layer), 0755)
-	require.NoError(err)
-	err = fs.WriteFile("source.yaml", []byte(source), 0755)
-	require.NoError(err)
-
-	_, err = c.Run()
+	_, err := c.Run()
 	require.Error(err)
 	require.Contains(err.Error(), "match_path \"name\" not found")
 }
@@ -711,17 +658,11 @@ app:
   backends:
     - name: prod-a
 `
+	baseDir := writeBaseFile(t, fs, "base.yaml", base)
+	writeLayerFile(t, fs, baseDir, "1-layer.yaml", layer)
+	writeFile(t, fs, "source.yaml", source)
 
-	err := fs.WriteFile("base.yaml", []byte(base), 0755)
-	require.NoError(err)
-	err = fs.Mkdir("base.yaml.d", 0755)
-	require.NoError(err)
-	err = fs.WriteFile("base.yaml.d/1-layer.yaml", []byte(layer), 0755)
-	require.NoError(err)
-	err = fs.WriteFile("source.yaml", []byte(source), 0755)
-	require.NoError(err)
-
-	_, err = c.Run()
+	_, err := c.Run()
 	require.Error(err)
 	require.Contains(err.Error(), "object list requires transform.list_filter.match_path")
 }
@@ -749,17 +690,11 @@ app:
 	source := `inventory:
   backends: prod-a
 `
+	baseDir := writeBaseFile(t, fs, "base.yaml", base)
+	writeLayerFile(t, fs, baseDir, "1-layer.yaml", layer)
+	writeFile(t, fs, "source.yaml", source)
 
-	err := fs.WriteFile("base.yaml", []byte(base), 0755)
-	require.NoError(err)
-	err = fs.Mkdir("base.yaml.d", 0755)
-	require.NoError(err)
-	err = fs.WriteFile("base.yaml.d/1-layer.yaml", []byte(layer), 0755)
-	require.NoError(err)
-	err = fs.WriteFile("source.yaml", []byte(source), 0755)
-	require.NoError(err)
-
-	_, err = c.Run()
+	_, err := c.Run()
 	require.Error(err)
 	require.Contains(err.Error(), "must resolve to a list")
 }
@@ -807,15 +742,9 @@ app:
     - name: prod-b
       url: https://b
 `
-
-	err := fs.WriteFile("base.yaml", []byte(base), 0755)
-	require.NoError(err)
-	err = fs.Mkdir("base.yaml.d", 0755)
-	require.NoError(err)
-	err = fs.WriteFile("base.yaml.d/1-layer.yaml", []byte(layer), 0755)
-	require.NoError(err)
-	err = fs.WriteFile("source.yaml", []byte(source), 0755)
-	require.NoError(err)
+	baseDir := writeBaseFile(t, fs, "base.yaml", base)
+	writeLayerFile(t, fs, baseDir, "1-layer.yaml", layer)
+	writeFile(t, fs, "source.yaml", source)
 
 	out, err := c.Run()
 	require.NoError(err)
@@ -847,13 +776,9 @@ func TestComposeReturnsErrorForUnknownOperatorKind(t *testing.T) {
 app:
   backend-names: []
 `
-	err := fs.WriteFile("base.yaml", []byte(base), 0755)
-	require.NoError(err)
-	err = fs.Mkdir("base.yaml.d", 0755)
-	require.NoError(err)
-	err = fs.WriteFile("base.yaml.d/1-layer.yaml", []byte(layer), 0755)
-	require.NoError(err)
-	_, err = c.Run()
+	baseDir := writeBaseFile(t, fs, "base.yaml", base)
+	writeLayerFile(t, fs, baseDir, "1-layer.yaml", layer)
+	_, err := c.Run()
 	require.Error(err)
 	require.Contains(err.Error(), "supported values")
 }
@@ -897,15 +822,9 @@ app:
         name: dev-a
       url: https://dev
 `
-
-	err := fs.WriteFile("base.yaml", []byte(base), 0755)
-	require.NoError(err)
-	err = fs.Mkdir("base.yaml.d", 0755)
-	require.NoError(err)
-	err = fs.WriteFile("base.yaml.d/1-layer.yaml", []byte(layer), 0755)
-	require.NoError(err)
-	err = fs.WriteFile("source.yaml", []byte(source), 0755)
-	require.NoError(err)
+	baseDir := writeBaseFile(t, fs, "base.yaml", base)
+	writeLayerFile(t, fs, baseDir, "1-layer.yaml", layer)
+	writeFile(t, fs, "source.yaml", source)
 
 	out, err := c.Run()
 	require.NoError(err)
@@ -949,14 +868,9 @@ app:
   backend-names: []
 `
 
-	err := fs.WriteFile("base.yaml", []byte(base), 0755)
-	require.NoError(err)
-	err = fs.Mkdir("base.yaml.d", 0755)
-	require.NoError(err)
-	err = fs.WriteFile("base.yaml.d/1-backends.yaml", []byte(firstLayer), 0755)
-	require.NoError(err)
-	err = fs.WriteFile("base.yaml.d/2-extract.yaml", []byte(secondLayer), 0755)
-	require.NoError(err)
+	baseDir := writeBaseFile(t, fs, "base.yaml", base)
+	writeLayerFile(t, fs, baseDir, "1-backends.yaml", firstLayer)
+	writeLayerFile(t, fs, baseDir, "2-extract.yaml", secondLayer)
 
 	out, err := c.Run()
 	require.NoError(err)
@@ -998,15 +912,9 @@ app:
     - name: prod-a
     - name: prod-b
 `
-
-	err := fs.WriteFile("base.yaml", []byte(base), 0755)
-	require.NoError(err)
-	err = fs.Mkdir("base.yaml.d", 0755)
-	require.NoError(err)
-	err = fs.WriteFile("base.yaml.d/1-layer.yaml", []byte(layer), 0755)
-	require.NoError(err)
-	err = fs.WriteFile("source.yaml", []byte(source), 0755)
-	require.NoError(err)
+	baseDir := writeBaseFile(t, fs, "base.yaml", base)
+	writeLayerFile(t, fs, baseDir, "1-layer.yaml", layer)
+	writeFile(t, fs, "source.yaml", source)
 
 	out, err := c.Run()
 	require.NoError(err)
@@ -1056,15 +964,9 @@ app:
     - name: prod-a
     - name: prod-b
 `
-
-	err := fs.WriteFile("base.yaml", []byte(base), 0755)
-	require.NoError(err)
-	err = fs.Mkdir("base.yaml.d", 0755)
-	require.NoError(err)
-	err = fs.WriteFile("base.yaml.d/1-layer.yaml", []byte(layer), 0755)
-	require.NoError(err)
-	err = fs.WriteFile("source.yaml", []byte(source), 0755)
-	require.NoError(err)
+	baseDir := writeBaseFile(t, fs, "base.yaml", base)
+	writeLayerFile(t, fs, baseDir, "1-layer.yaml", layer)
+	writeFile(t, fs, "source.yaml", source)
 
 	out, err := c.Run()
 	require.NoError(err)
@@ -1114,15 +1016,9 @@ groups:
     - port: p1
     - port: p2
 `
-
-	err := fs.WriteFile("base.yaml", []byte(base), 0755)
-	require.NoError(err)
-	err = fs.Mkdir("base.yaml.d", 0755)
-	require.NoError(err)
-	err = fs.WriteFile("base.yaml.d/1-layer.yaml", []byte(layer), 0755)
-	require.NoError(err)
-	err = fs.WriteFile("source.yaml", []byte(source), 0755)
-	require.NoError(err)
+	baseDir := writeBaseFile(t, fs, "base.yaml", base)
+	writeLayerFile(t, fs, baseDir, "1-layer.yaml", layer)
+	writeFile(t, fs, "source.yaml", source)
 
 	out, err := c.Run()
 	require.NoError(err)
@@ -1172,17 +1068,11 @@ app:
   backends:
     - name: prod-a
 `
+	baseDir := writeBaseFile(t, fs, "base.yaml", base)
+	writeLayerFile(t, fs, baseDir, "1-layer.yaml", layer)
+	writeFile(t, fs, "source.yaml", source)
 
-	err := fs.WriteFile("base.yaml", []byte(base), 0755)
-	require.NoError(err)
-	err = fs.Mkdir("base.yaml.d", 0755)
-	require.NoError(err)
-	err = fs.WriteFile("base.yaml.d/1-layer.yaml", []byte(layer), 0755)
-	require.NoError(err)
-	err = fs.WriteFile("source.yaml", []byte(source), 0755)
-	require.NoError(err)
-
-	_, err = c.Run()
+	_, err := c.Run()
 	require.Error(err)
 	require.Contains(err.Error(), "matched multiple array items")
 }
@@ -1217,17 +1107,11 @@ app:
   backends:
     - name: prod-a
 `
+	baseDir := writeBaseFile(t, fs, "base.yaml", base)
+	writeLayerFile(t, fs, baseDir, "1-layer.yaml", layer)
+	writeFile(t, fs, "source.yaml", source)
 
-	err := fs.WriteFile("base.yaml", []byte(base), 0755)
-	require.NoError(err)
-	err = fs.Mkdir("base.yaml.d", 0755)
-	require.NoError(err)
-	err = fs.WriteFile("base.yaml.d/1-layer.yaml", []byte(layer), 0755)
-	require.NoError(err)
-	err = fs.WriteFile("source.yaml", []byte(source), 0755)
-	require.NoError(err)
-
-	_, err = c.Run()
+	_, err := c.Run()
 	require.Error(err)
 	require.Contains(err.Error(), "matched no array item")
 }
@@ -1260,17 +1144,11 @@ app:
   backends:
     - name: prod-a
 `
+	baseDir := writeBaseFile(t, fs, "base.yaml", base)
+	writeLayerFile(t, fs, baseDir, "1-layer.yaml", layer)
+	writeFile(t, fs, "source.yaml", source)
 
-	err := fs.WriteFile("base.yaml", []byte(base), 0755)
-	require.NoError(err)
-	err = fs.Mkdir("base.yaml.d", 0755)
-	require.NoError(err)
-	err = fs.WriteFile("base.yaml.d/1-layer.yaml", []byte(layer), 0755)
-	require.NoError(err)
-	err = fs.WriteFile("source.yaml", []byte(source), 0755)
-	require.NoError(err)
-
-	_, err = c.Run()
+	_, err := c.Run()
 	require.Error(err)
 	require.Contains(err.Error(), "index 1 out of range")
 }
@@ -1302,17 +1180,11 @@ app:
     - meta:
         id: a
 `
+	baseDir := writeBaseFile(t, fs, "base.yaml", base)
+	writeLayerFile(t, fs, baseDir, "1-layer.yaml", layer)
+	writeFile(t, fs, "source.yaml", source)
 
-	err := fs.WriteFile("base.yaml", []byte(base), 0755)
-	require.NoError(err)
-	err = fs.Mkdir("base.yaml.d", 0755)
-	require.NoError(err)
-	err = fs.WriteFile("base.yaml.d/1-layer.yaml", []byte(layer), 0755)
-	require.NoError(err)
-	err = fs.WriteFile("source.yaml", []byte(source), 0755)
-	require.NoError(err)
-
-	_, err = c.Run()
+	_, err := c.Run()
 	require.Error(err)
 	require.Contains(err.Error(), "extract_path \"meta.name\" not found")
 }
@@ -1344,17 +1216,11 @@ app:
     - meta:
         name: 123
 `
+	baseDir := writeBaseFile(t, fs, "base.yaml", base)
+	writeLayerFile(t, fs, baseDir, "1-layer.yaml", layer)
+	writeFile(t, fs, "source.yaml", source)
 
-	err := fs.WriteFile("base.yaml", []byte(base), 0755)
-	require.NoError(err)
-	err = fs.Mkdir("base.yaml.d", 0755)
-	require.NoError(err)
-	err = fs.WriteFile("base.yaml.d/1-layer.yaml", []byte(layer), 0755)
-	require.NoError(err)
-	err = fs.WriteFile("source.yaml", []byte(source), 0755)
-	require.NoError(err)
-
-	_, err = c.Run()
+	_, err := c.Run()
 	require.Error(err)
 	require.Contains(err.Error(), "extract_path \"meta.name\" must resolve to string")
 }
@@ -1387,17 +1253,11 @@ app:
     - meta:
         name: prod-a
 `
+	baseDir := writeBaseFile(t, fs, "base.yaml", base)
+	writeLayerFile(t, fs, baseDir, "1-layer.yaml", layer)
+	writeFile(t, fs, "source.yaml", source)
 
-	err := fs.WriteFile("base.yaml", []byte(base), 0755)
-	require.NoError(err)
-	err = fs.Mkdir("base.yaml.d", 0755)
-	require.NoError(err)
-	err = fs.WriteFile("base.yaml.d/1-layer.yaml", []byte(layer), 0755)
-	require.NoError(err)
-	err = fs.WriteFile("source.yaml", []byte(source), 0755)
-	require.NoError(err)
-
-	_, err = c.Run()
+	_, err := c.Run()
 	require.Error(err)
 	require.Contains(err.Error(), "list_extract.include_mode")
 }
@@ -1424,13 +1284,8 @@ func TestComposeTransformReplaceValuesSupportsStringSource(t *testing.T) {
 ---
 app: {}
 `
-
-	err := fs.WriteFile("base.yaml", []byte(base), 0755)
-	require.NoError(err)
-	err = fs.Mkdir("base.yaml.d", 0755)
-	require.NoError(err)
-	err = fs.WriteFile("base.yaml.d/1-layer.yaml", []byte(layer), 0755)
-	require.NoError(err)
+	baseDir := writeBaseFile(t, fs, "base.yaml", base)
+	writeLayerFile(t, fs, baseDir, "1-layer.yaml", layer)
 
 	out, err := c.Run()
 	require.NoError(err)
@@ -1471,13 +1326,8 @@ func TestComposeTransformReplaceValuesNonRecursiveOnlyReplacesTopLevelValues(t *
 ---
 app: {}
 `
-
-	err := fs.WriteFile("base.yaml", []byte(base), 0755)
-	require.NoError(err)
-	err = fs.Mkdir("base.yaml.d", 0755)
-	require.NoError(err)
-	err = fs.WriteFile("base.yaml.d/1-layer.yaml", []byte(layer), 0755)
-	require.NoError(err)
+	baseDir := writeBaseFile(t, fs, "base.yaml", base)
+	writeLayerFile(t, fs, baseDir, "1-layer.yaml", layer)
 
 	out, err := c.Run()
 	require.NoError(err)
@@ -1528,13 +1378,8 @@ func TestComposeTransformReplaceValuesRecursiveReplacesNestedAndArrayValues(t *t
 ---
 app: {}
 `
-
-	err := fs.WriteFile("base.yaml", []byte(base), 0755)
-	require.NoError(err)
-	err = fs.Mkdir("base.yaml.d", 0755)
-	require.NoError(err)
-	err = fs.WriteFile("base.yaml.d/1-layer.yaml", []byte(layer), 0755)
-	require.NoError(err)
+	baseDir := writeBaseFile(t, fs, "base.yaml", base)
+	writeLayerFile(t, fs, baseDir, "1-layer.yaml", layer)
 
 	out, err := c.Run()
 	require.NoError(err)
@@ -1575,15 +1420,10 @@ func TestComposeTransformReplaceValuesReturnsErrorWhenOldEmpty(t *testing.T) {
 ---
 app: {}
 `
+	baseDir := writeBaseFile(t, fs, "base.yaml", base)
+	writeLayerFile(t, fs, baseDir, "1-layer.yaml", layer)
 
-	err := fs.WriteFile("base.yaml", []byte(base), 0755)
-	require.NoError(err)
-	err = fs.Mkdir("base.yaml.d", 0755)
-	require.NoError(err)
-	err = fs.WriteFile("base.yaml.d/1-layer.yaml", []byte(layer), 0755)
-	require.NoError(err)
-
-	_, err = c.Run()
+	_, err := c.Run()
 	require.Error(err)
 	require.Contains(err.Error(), "replace_values.old")
 }
@@ -1615,18 +1455,13 @@ func TestComposeTransformReplaceValuesPrintsOriginalValuesWhenEnabled(t *testing
 ---
 app: {}
 `
-
-	err := fs.WriteFile("base.yaml", []byte(base), 0755)
-	require.NoError(err)
-	err = fs.Mkdir("base.yaml.d", 0755)
-	require.NoError(err)
-	err = fs.WriteFile("base.yaml.d/1-layer.yaml", []byte(layer), 0755)
-	require.NoError(err)
+	baseDir := writeBaseFile(t, fs, "base.yaml", base)
+	writeLayerFile(t, fs, baseDir, "1-layer.yaml", layer)
 
 	var logs bytes.Buffer
 	c.SetTransformLogWriter(&logs)
 
-	_, err = c.Run()
+	_, err := c.Run()
 	require.NoError(err)
 	require.Contains(logs.String(), "foo-a")
 	require.Contains(logs.String(), "foo-b")
@@ -1638,8 +1473,7 @@ func TestComposeOutputUsesTwoSpaceIndentForNestedLists(t *testing.T) {
 
 	c := compose.NewMock("base.yaml", nil)
 	fs := c.GetFilesystem()
-	err := fs.WriteFile("base.yaml", []byte("app:\n  db:\n    ports:\n      - 5432\n"), 0755)
-	require.NoError(err)
+	writeFile(t, fs, "base.yaml", "app:\n  db:\n    ports:\n      - 5432\n")
 
 	out, err := c.Run()
 	require.NoError(err)
@@ -1679,15 +1513,9 @@ app:
     - name: dev-a
     - name: prod-b
 `
-
-	err := fs.WriteFile("base.yaml", []byte(base), 0755)
-	require.NoError(err)
-	err = fs.Mkdir("base.yaml.d", 0755)
-	require.NoError(err)
-	err = fs.WriteFile("base.yaml.d/1-layer.yaml", []byte(layer), 0755)
-	require.NoError(err)
-	err = fs.WriteFile("source.yaml", []byte(source), 0755)
-	require.NoError(err)
+	baseDir := writeBaseFile(t, fs, "base.yaml", base)
+	writeLayerFile(t, fs, baseDir, "1-layer.yaml", layer)
+	writeFile(t, fs, "source.yaml", source)
 
 	out, err := c.Run()
 	require.NoError(err)
@@ -1729,13 +1557,8 @@ func TestComposeOperatorsCanInterleaveMergeAndStateTransforms(t *testing.T) {
 app:
   url: http://foo.example
 `
-
-	err := fs.WriteFile("base.yaml", []byte(base), 0755)
-	require.NoError(err)
-	err = fs.Mkdir("base.yaml.d", 0755)
-	require.NoError(err)
-	err = fs.WriteFile("base.yaml.d/1-layer.yaml", []byte(layer), 0755)
-	require.NoError(err)
+	baseDir := writeBaseFile(t, fs, "base.yaml", base)
+	writeLayerFile(t, fs, baseDir, "1-layer.yaml", layer)
 
 	out, err := c.Run()
 	require.NoError(err)
@@ -1769,15 +1592,10 @@ func TestComposeReturnsErrorForLegacyMetadataField(t *testing.T) {
 app:
   url: http://foo.example
 `
+	baseDir := writeBaseFile(t, fs, "base.yaml", base)
+	writeLayerFile(t, fs, baseDir, "1-layer.yaml", layer)
 
-	err := fs.WriteFile("base.yaml", []byte(base), 0755)
-	require.NoError(err)
-	err = fs.Mkdir("base.yaml.d", 0755)
-	require.NoError(err)
-	err = fs.WriteFile("base.yaml.d/1-layer.yaml", []byte(layer), 0755)
-	require.NoError(err)
-
-	_, err = c.Run()
+	_, err := c.Run()
 	require.Error(err)
 	require.Contains(err.Error(), "legacy metadata field")
 }

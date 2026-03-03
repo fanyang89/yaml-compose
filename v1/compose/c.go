@@ -162,6 +162,19 @@ type layerTransform struct {
 	merge         layerMergeStrategy
 }
 
+type parsedOperatorSource struct {
+	from    string
+	file    string
+	path    []string
+	hasPath bool
+}
+
+type operatorExecutionResult struct {
+	state       map[string]interface{}
+	output      interface{}
+	writeTarget bool
+}
+
 type layerListFilter struct {
 	matchPath   []string
 	include     []*regexp.Regexp
@@ -181,6 +194,12 @@ type layerReplaceValues struct {
 	new           string
 	recursive     bool
 	printOriginal bool
+}
+
+type regexFilterConfig struct {
+	include     []*regexp.Regexp
+	exclude     []*regexp.Regexp
+	includeMode includeMode
 }
 
 type includeMode string
@@ -459,18 +478,9 @@ func buildLayerOperator(meta layerOperatorMetadata, fieldPrefix string) (layerTr
 }
 
 func buildMergeOperator(meta layerOperatorMetadata, fieldPrefix string) (layerTransform, error) {
-	sourceFrom := meta.Source.From
-	if sourceFrom == "" {
-		sourceFrom = transformSourceLayer
-	}
-	if sourceFrom != transformSourceFile && sourceFrom != transformSourceState && sourceFrom != transformSourceLayer {
-		return layerTransform{}, fmt.Errorf("invalid %s.source.from %q: supported values: file, state, layer", fieldPrefix, meta.Source.From)
-	}
-	if sourceFrom == transformSourceFile && meta.Source.File == "" {
-		return layerTransform{}, fmt.Errorf("invalid %s.source.file: cannot be empty when source.from=file", fieldPrefix)
-	}
-	if sourceFrom != transformSourceFile && meta.Source.File != "" {
-		return layerTransform{}, fmt.Errorf("invalid %s.source.file: must be empty when source.from is not file", fieldPrefix)
+	source, err := parseOperatorSource(meta.Source, fieldPrefix, transformSourceLayer, sourcePathOptional)
+	if err != nil {
+		return layerTransform{}, err
 	}
 
 	strategy, err := buildLayerMergeStrategy(meta.Merge)
@@ -479,19 +489,12 @@ func buildMergeOperator(meta layerOperatorMetadata, fieldPrefix string) (layerTr
 	}
 
 	op := layerTransform{
-		kind:       transformKindMerge,
-		sourceFrom: sourceFrom,
-		sourceFile: meta.Source.File,
-		merge:      strategy,
-	}
-
-	if meta.Source.Path != "" {
-		sourcePath, err := splitDotPath(meta.Source.Path)
-		if err != nil {
-			return layerTransform{}, fmt.Errorf("invalid %s.source.path %q: %w", fieldPrefix, meta.Source.Path, err)
-		}
-		op.sourcePath = sourcePath
-		op.hasSourcePath = true
+		kind:          transformKindMerge,
+		sourceFrom:    source.from,
+		sourceFile:    source.file,
+		merge:         strategy,
+		sourcePath:    source.path,
+		hasSourcePath: source.hasPath,
 	}
 
 	return op, nil
@@ -502,40 +505,22 @@ func buildLayerTransform(meta layerTransformMetadata, fieldPrefix string) (layer
 		return layerTransform{}, fmt.Errorf("invalid %s.kind %q: supported values: list_filter, list_extract, replace_values", fieldPrefix, meta.Kind)
 	}
 
-	sourceFrom := meta.Source.From
-	if sourceFrom == "" {
-		sourceFrom = transformSourceFile
-	}
-	if sourceFrom != transformSourceFile && sourceFrom != transformSourceState && sourceFrom != transformSourceLayer {
-		return layerTransform{}, fmt.Errorf("invalid %s.source.from %q: supported values: file, state, layer", fieldPrefix, meta.Source.From)
-	}
-	if sourceFrom == transformSourceFile && meta.Source.File == "" {
-		return layerTransform{}, fmt.Errorf("invalid %s.source.file: cannot be empty when source.from=file", fieldPrefix)
-	}
-	if sourceFrom != transformSourceFile && meta.Source.File != "" {
-		return layerTransform{}, fmt.Errorf("invalid %s.source.file: must be empty when source.from is not file", fieldPrefix)
+	source, err := parseOperatorSource(meta.Source, fieldPrefix, transformSourceFile, sourcePathRequired)
+	if err != nil {
+		return layerTransform{}, err
 	}
 
-	sourcePath, err := splitDotPath(meta.Source.Path)
+	targetPath, err := parseTargetPath(meta.Target.Path, meta.Source.Path, fieldPrefix)
 	if err != nil {
-		return layerTransform{}, fmt.Errorf("invalid %s.source.path %q: %w", fieldPrefix, meta.Source.Path, err)
-	}
-
-	targetPathRaw := meta.Target.Path
-	if targetPathRaw == "" {
-		targetPathRaw = meta.Source.Path
-	}
-	targetPath, err := splitDotPath(targetPathRaw)
-	if err != nil {
-		return layerTransform{}, fmt.Errorf("invalid %s.target.path %q: %w", fieldPrefix, targetPathRaw, err)
+		return layerTransform{}, err
 	}
 
 	transform := layerTransform{
 		kind:          meta.Kind,
-		sourceFrom:    sourceFrom,
-		sourceFile:    meta.Source.File,
-		sourcePath:    sourcePath,
-		hasSourcePath: true,
+		sourceFrom:    source.from,
+		sourceFile:    source.file,
+		sourcePath:    source.path,
+		hasSourcePath: source.hasPath,
 		targetPath:    targetPath,
 	}
 
@@ -582,65 +567,95 @@ func buildListExtract(meta layerListExtractMetadata, fieldPrefix string) (layerL
 		return layerListExtract{}, fmt.Errorf("invalid %s.list_extract.extract_path %q: %w", fieldPrefix, meta.ExtractPath, err)
 	}
 
-	includeRegex, err := compileRegexList(meta.Include, fmt.Sprintf("%s.list_extract.include", fieldPrefix))
+	filterConfig, err := parseRegexFilterConfig(
+		meta.Include,
+		meta.Exclude,
+		meta.IncludeMode,
+		fmt.Sprintf("%s.list_extract", fieldPrefix),
+	)
 	if err != nil {
 		return layerListExtract{}, err
-	}
-
-	excludeRegex, err := compileRegexList(meta.Exclude, fmt.Sprintf("%s.list_extract.exclude", fieldPrefix))
-	if err != nil {
-		return layerListExtract{}, err
-	}
-
-	mode := includeModeAny
-	if meta.IncludeMode != "" {
-		mode = includeMode(meta.IncludeMode)
-	}
-	if mode != includeModeAny && mode != includeModeAll {
-		return layerListExtract{}, fmt.Errorf("invalid %s.list_extract.include_mode %q: supported values: any, all", fieldPrefix, meta.IncludeMode)
 	}
 
 	return layerListExtract{
 		extractPath: extractPath,
+		include:     filterConfig.include,
+		exclude:     filterConfig.exclude,
+		includeMode: filterConfig.includeMode,
+	}, nil
+}
+
+func buildListFilter(meta layerListFilterMetadata, fieldPrefix string) (layerListFilter, error) {
+	filterConfig, err := parseRegexFilterConfig(
+		meta.Include,
+		meta.Exclude,
+		meta.IncludeMode,
+		fmt.Sprintf("%s.list_filter", fieldPrefix),
+	)
+	if err != nil {
+		return layerListFilter{}, err
+	}
+
+	matchPath, err := parseOptionalPath(meta.MatchPath, fmt.Sprintf("%s.list_filter.match_path", fieldPrefix))
+	if err != nil {
+		return layerListFilter{}, err
+	}
+
+	return layerListFilter{
+		matchPath:   matchPath,
+		include:     filterConfig.include,
+		exclude:     filterConfig.exclude,
+		includeMode: filterConfig.includeMode,
+	}, nil
+}
+
+func parseRegexFilterConfig(include []string, exclude []string, includeModeRaw string, fieldPrefix string) (regexFilterConfig, error) {
+	includeRegex, err := compileRegexList(include, fmt.Sprintf("%s.include", fieldPrefix))
+	if err != nil {
+		return regexFilterConfig{}, err
+	}
+
+	excludeRegex, err := compileRegexList(exclude, fmt.Sprintf("%s.exclude", fieldPrefix))
+	if err != nil {
+		return regexFilterConfig{}, err
+	}
+
+	mode, err := parseIncludeMode(includeModeRaw, fmt.Sprintf("%s.include_mode", fieldPrefix))
+	if err != nil {
+		return regexFilterConfig{}, err
+	}
+
+	return regexFilterConfig{
 		include:     includeRegex,
 		exclude:     excludeRegex,
 		includeMode: mode,
 	}, nil
 }
 
-func buildListFilter(meta layerListFilterMetadata, fieldPrefix string) (layerListFilter, error) {
-	includeRegex, err := compileRegexList(meta.Include, fmt.Sprintf("%s.list_filter.include", fieldPrefix))
+func parseOptionalPath(rawPath string, fieldName string) ([]string, error) {
+	if rawPath == "" {
+		return nil, nil
+	}
+
+	path, err := splitDotPath(rawPath)
 	if err != nil {
-		return layerListFilter{}, err
+		return nil, fmt.Errorf("invalid %s %q: %w", fieldName, rawPath, err)
 	}
 
-	excludeRegex, err := compileRegexList(meta.Exclude, fmt.Sprintf("%s.list_filter.exclude", fieldPrefix))
+	return path, nil
+}
+
+func parseTargetPath(targetPathRaw string, sourcePathRaw string, fieldPrefix string) ([]string, error) {
+	if targetPathRaw == "" {
+		targetPathRaw = sourcePathRaw
+	}
+
+	targetPath, err := splitDotPath(targetPathRaw)
 	if err != nil {
-		return layerListFilter{}, err
+		return nil, fmt.Errorf("invalid %s.target.path %q: %w", fieldPrefix, targetPathRaw, err)
 	}
 
-	mode := includeModeAny
-	if meta.IncludeMode != "" {
-		mode = includeMode(meta.IncludeMode)
-	}
-	if mode != includeModeAny && mode != includeModeAll {
-		return layerListFilter{}, fmt.Errorf("invalid %s.list_filter.include_mode %q: supported values: any, all", fieldPrefix, meta.IncludeMode)
-	}
-
-	var matchPath []string
-	if meta.MatchPath != "" {
-		matchPath, err = splitDotPath(meta.MatchPath)
-		if err != nil {
-			return layerListFilter{}, fmt.Errorf("invalid %s.list_filter.match_path %q: %w", fieldPrefix, meta.MatchPath, err)
-		}
-	}
-
-	return layerListFilter{
-		matchPath:   matchPath,
-		include:     includeRegex,
-		exclude:     excludeRegex,
-		includeMode: mode,
-	}, nil
+	return targetPath, nil
 }
 
 func compileRegexList(raw []string, fieldName string) ([]*regexp.Regexp, error) {
@@ -655,6 +670,61 @@ func compileRegexList(raw []string, fieldName string) ([]*regexp.Regexp, error) 
 	return out, nil
 }
 
+type sourcePathRequirement int
+
+const (
+	sourcePathOptional sourcePathRequirement = iota
+	sourcePathRequired
+)
+
+func parseOperatorSource(meta layerTransformSource, fieldPrefix string, defaultFrom string, pathRequirement sourcePathRequirement) (parsedOperatorSource, error) {
+	from := meta.From
+	if from == "" {
+		from = defaultFrom
+	}
+	if from != transformSourceFile && from != transformSourceState && from != transformSourceLayer {
+		return parsedOperatorSource{}, fmt.Errorf("invalid %s.source.from %q: supported values: file, state, layer", fieldPrefix, meta.From)
+	}
+	if from == transformSourceFile && meta.File == "" {
+		return parsedOperatorSource{}, fmt.Errorf("invalid %s.source.file: cannot be empty when source.from=file", fieldPrefix)
+	}
+	if from != transformSourceFile && meta.File != "" {
+		return parsedOperatorSource{}, fmt.Errorf("invalid %s.source.file: must be empty when source.from is not file", fieldPrefix)
+	}
+
+	if pathRequirement == sourcePathRequired && meta.Path == "" {
+		return parsedOperatorSource{}, fmt.Errorf("invalid %s.source.path %q: path cannot be empty", fieldPrefix, meta.Path)
+	}
+	if meta.Path == "" {
+		return parsedOperatorSource{from: from, file: meta.File}, nil
+	}
+
+	path, err := splitDotPath(meta.Path)
+	if err != nil {
+		return parsedOperatorSource{}, fmt.Errorf("invalid %s.source.path %q: %w", fieldPrefix, meta.Path, err)
+	}
+
+	return parsedOperatorSource{
+		from:    from,
+		file:    meta.File,
+		path:    path,
+		hasPath: true,
+	}, nil
+}
+
+func parseIncludeMode(raw string, fieldName string) (includeMode, error) {
+	if raw == "" {
+		return includeModeAny, nil
+	}
+
+	mode := includeMode(raw)
+	if mode != includeModeAny && mode != includeModeAll {
+		return "", fmt.Errorf("invalid %s %q: supported values: any, all", fieldName, raw)
+	}
+
+	return mode, nil
+}
+
 func (c *Compose) applyLayerOperator(layer map[string]interface{}, operator layerTransform, state map[string]interface{}) (map[string]interface{}, map[string]interface{}, error) {
 	if layer == nil {
 		layer = map[string]interface{}{}
@@ -663,77 +733,158 @@ func (c *Compose) applyLayerOperator(layer map[string]interface{}, operator laye
 		state = map[string]interface{}{}
 	}
 
-	var sourceData interface{}
-	var err error
-	switch operator.sourceFrom {
-	case transformSourceState:
-		sourceData = state
-	case transformSourceFile:
-		sourceData, err = c.readSourceYAML(operator.sourceFile)
-		if err != nil {
-			return nil, nil, err
-		}
-	case transformSourceLayer:
-		sourceData = layer
-	default:
-		return nil, nil, fmt.Errorf("unsupported operator source.from %q", operator.sourceFrom)
+	input, err := c.resolveOperatorInput(operator, layer, state)
+	if err != nil {
+		return nil, nil, err
 	}
 
-	input := sourceData
-	if operator.hasSourcePath {
-		var ok bool
-		input, ok = getValueAtPath(sourceData, operator.sourcePath)
-		if !ok {
-			return nil, nil, fmt.Errorf("source path %q not found", normalizePath(operator.sourcePath))
-		}
+	result, err := c.executeOperator(operator, input, state)
+	if err != nil {
+		return nil, nil, err
 	}
+	state = result.state
 
-	var output interface{}
-	switch operator.kind {
-	case transformKindMerge:
-		inputMap, ok := input.(map[string]interface{})
-		if !ok {
-			return nil, nil, fmt.Errorf("source path %q must resolve to an object", normalizePath(operator.sourcePath))
-		}
-		state = mergeMapsWithStrategy(state, inputMap, operator.merge, nil)
+	if !result.writeTarget {
 		return layer, state, nil
-	case transformKindListFilter:
-		inputList, ok := input.([]interface{})
-		if !ok {
-			return nil, nil, fmt.Errorf("source path %q must resolve to a list", normalizePath(operator.sourcePath))
-		}
-		output, err = applyListFilter(inputList, operator.listFilter)
-		if err != nil {
-			return nil, nil, err
-		}
-	case transformKindListExtract:
-		inputList, ok := input.([]interface{})
-		if !ok {
-			return nil, nil, fmt.Errorf("source path %q must resolve to a list", normalizePath(operator.sourcePath))
-		}
-		output, err = applyListExtract(inputList, operator.listExtract)
-		if err != nil {
-			return nil, nil, err
-		}
-	case transformKindReplaceVals:
-		var originals []string
-		output, originals = applyReplaceValues(input, operator.replaceVals)
-		if operator.replaceVals.printOriginal {
-			for _, original := range originals {
-				if _, werr := fmt.Fprintln(c.logOut, original); werr != nil {
-					return nil, nil, fmt.Errorf("print replaced original value: %w", werr)
-				}
-			}
-		}
-	default:
-		return nil, nil, fmt.Errorf("unsupported operator kind %q", operator.kind)
 	}
 
-	if err := setMapValueAtPath(layer, operator.targetPath, output); err != nil {
+	if err := setMapValueAtPath(layer, operator.targetPath, result.output); err != nil {
 		return nil, nil, err
 	}
 
 	return layer, state, nil
+}
+
+func (c *Compose) resolveOperatorInput(operator layerTransform, layer map[string]interface{}, state map[string]interface{}) (interface{}, error) {
+	sourceData, err := c.readOperatorSourceData(operator, layer, state)
+	if err != nil {
+		return nil, err
+	}
+
+	if !operator.hasSourcePath {
+		return sourceData, nil
+	}
+
+	input, ok := getValueAtPath(sourceData, operator.sourcePath)
+	if !ok {
+		return nil, fmt.Errorf("source path %q not found", normalizePath(operator.sourcePath))
+	}
+
+	return input, nil
+}
+
+func (c *Compose) readOperatorSourceData(operator layerTransform, layer map[string]interface{}, state map[string]interface{}) (interface{}, error) {
+	switch operator.sourceFrom {
+	case transformSourceState:
+		return state, nil
+	case transformSourceFile:
+		return c.readSourceYAML(operator.sourceFile)
+	case transformSourceLayer:
+		return layer, nil
+	default:
+		return nil, fmt.Errorf("unsupported operator source.from %q", operator.sourceFrom)
+	}
+}
+
+func (c *Compose) executeOperator(operator layerTransform, input interface{}, state map[string]interface{}) (operatorExecutionResult, error) {
+	switch operator.kind {
+	case transformKindMerge:
+		return executeMergeOperator(input, operator, state)
+	case transformKindListFilter:
+		return executeListFilterOperator(input, operator, state)
+	case transformKindListExtract:
+		return executeListExtractOperator(input, operator, state)
+	case transformKindReplaceVals:
+		return c.executeReplaceValuesOperator(input, operator, state)
+	default:
+		return operatorExecutionResult{}, fmt.Errorf("unsupported operator kind %q", operator.kind)
+	}
+}
+
+func executeMergeOperator(input interface{}, operator layerTransform, state map[string]interface{}) (operatorExecutionResult, error) {
+	inputMap, err := requireMapInput(input, operator.sourcePath)
+	if err != nil {
+		return operatorExecutionResult{}, err
+	}
+
+	return operatorExecutionResult{
+		state: mergeMapsWithStrategy(state, inputMap, operator.merge, nil),
+	}, nil
+}
+
+func executeListFilterOperator(input interface{}, operator layerTransform, state map[string]interface{}) (operatorExecutionResult, error) {
+	return executeListOutputOperator(input, operator.sourcePath, state, func(inputList []interface{}) (interface{}, error) {
+		return applyListFilter(inputList, operator.listFilter)
+	})
+}
+
+func executeListExtractOperator(input interface{}, operator layerTransform, state map[string]interface{}) (operatorExecutionResult, error) {
+	return executeListOutputOperator(input, operator.sourcePath, state, func(inputList []interface{}) (interface{}, error) {
+		return applyListExtract(inputList, operator.listExtract)
+	})
+}
+
+func executeListOutputOperator(input interface{}, sourcePath []string, state map[string]interface{}, apply func([]interface{}) (interface{}, error)) (operatorExecutionResult, error) {
+	inputList, err := requireListInput(input, sourcePath)
+	if err != nil {
+		return operatorExecutionResult{}, err
+	}
+
+	output, err := apply(inputList)
+	if err != nil {
+		return operatorExecutionResult{}, err
+	}
+
+	return newWriteTargetResult(state, output), nil
+}
+
+func (c *Compose) executeReplaceValuesOperator(input interface{}, operator layerTransform, state map[string]interface{}) (operatorExecutionResult, error) {
+	output, originals := applyReplaceValues(input, operator.replaceVals)
+	if err := c.printReplacedOriginals(originals, operator.replaceVals.printOriginal); err != nil {
+		return operatorExecutionResult{}, err
+	}
+
+	return newWriteTargetResult(state, output), nil
+}
+
+func (c *Compose) printReplacedOriginals(originals []string, enabled bool) error {
+	if !enabled {
+		return nil
+	}
+
+	for _, original := range originals {
+		if _, err := fmt.Fprintln(c.logOut, original); err != nil {
+			return fmt.Errorf("print replaced original value: %w", err)
+		}
+	}
+
+	return nil
+}
+
+func newWriteTargetResult(state map[string]interface{}, output interface{}) operatorExecutionResult {
+	return operatorExecutionResult{
+		state:       state,
+		output:      output,
+		writeTarget: true,
+	}
+}
+
+func requireListInput(input interface{}, sourcePath []string) ([]interface{}, error) {
+	inputList, ok := input.([]interface{})
+	if !ok {
+		return nil, fmt.Errorf("source path %q must resolve to a list", normalizePath(sourcePath))
+	}
+
+	return inputList, nil
+}
+
+func requireMapInput(input interface{}, sourcePath []string) (map[string]interface{}, error) {
+	inputMap, ok := input.(map[string]interface{})
+	if !ok {
+		return nil, fmt.Errorf("source path %q must resolve to an object", normalizePath(sourcePath))
+	}
+
+	return inputMap, nil
 }
 
 func (c *Compose) readSourceYAML(rawPath string) (interface{}, error) {
@@ -763,10 +914,7 @@ func applyListFilter(input []interface{}, filter layerListFilter) ([]interface{}
 			return nil, fmt.Errorf("invalid list item at index %d: %w", i, err)
 		}
 
-		if !matchesInclude(candidate, filter.include, filter.includeMode) {
-			continue
-		}
-		if matchesAny(candidate, filter.exclude) {
+		if !shouldKeepCandidate(candidate, filter.include, filter.exclude, filter.includeMode) {
 			continue
 		}
 		out = append(out, item)
@@ -793,10 +941,7 @@ func applyListExtract(input []interface{}, extract layerListExtract) ([]interfac
 			return nil, fmt.Errorf("invalid list item at index %d: extract_path %q must resolve to string", i, normalizePath(extract.extractPath))
 		}
 
-		if !matchesInclude(s, extract.include, extract.includeMode) {
-			continue
-		}
-		if matchesAny(s, extract.exclude) {
+		if !shouldKeepCandidate(s, extract.include, extract.exclude, extract.includeMode) {
 			continue
 		}
 
@@ -807,13 +952,10 @@ func applyListExtract(input []interface{}, extract layerListExtract) ([]interfac
 }
 
 func applyReplaceValues(input interface{}, replace layerReplaceValues) (interface{}, []string) {
-	if replace.recursive {
-		return replaceValuesRecursive(input, replace.old, replace.new)
-	}
-	return replaceValuesShallow(input, replace.old, replace.new)
+	return replaceValues(input, replace.old, replace.new, replace.recursive)
 }
 
-func replaceValuesShallow(input interface{}, old string, new string) (interface{}, []string) {
+func replaceValues(input interface{}, old string, new string, recursive bool) (interface{}, []string) {
 	s, ok := input.(string)
 	if ok {
 		replaced := strings.ReplaceAll(s, old, new)
@@ -828,7 +970,13 @@ func replaceValuesShallow(input interface{}, old string, new string) (interface{
 		out := make(map[string]interface{}, len(m))
 		originals := make([]string, 0)
 		for k, v := range m {
-			if sv, ok := v.(string); ok {
+			if recursive {
+				replaced, childOriginals := replaceValues(v, old, new, true)
+				out[k] = replaced
+				originals = append(originals, childOriginals...)
+				continue
+			}
+			if sv, isString := v.(string); isString {
 				replaced := strings.ReplaceAll(sv, old, new)
 				if replaced != sv {
 					originals = append(originals, sv)
@@ -846,7 +994,13 @@ func replaceValuesShallow(input interface{}, old string, new string) (interface{
 		out := make([]interface{}, len(list))
 		originals := make([]string, 0)
 		for i, v := range list {
-			if sv, ok := v.(string); ok {
+			if recursive {
+				replaced, childOriginals := replaceValues(v, old, new, true)
+				out[i] = replaced
+				originals = append(originals, childOriginals...)
+				continue
+			}
+			if sv, isString := v.(string); isString {
 				replaced := strings.ReplaceAll(sv, old, new)
 				if replaced != sv {
 					originals = append(originals, sv)
@@ -855,43 +1009,6 @@ func replaceValuesShallow(input interface{}, old string, new string) (interface{
 				continue
 			}
 			out[i] = v
-		}
-		return out, originals
-	}
-
-	return input, nil
-}
-
-func replaceValuesRecursive(input interface{}, old string, new string) (interface{}, []string) {
-	s, ok := input.(string)
-	if ok {
-		replaced := strings.ReplaceAll(s, old, new)
-		if replaced != s {
-			return replaced, []string{s}
-		}
-		return replaced, nil
-	}
-
-	m, ok := input.(map[string]interface{})
-	if ok {
-		out := make(map[string]interface{}, len(m))
-		originals := make([]string, 0)
-		for k, v := range m {
-			replaced, childOriginals := replaceValuesRecursive(v, old, new)
-			out[k] = replaced
-			originals = append(originals, childOriginals...)
-		}
-		return out, originals
-	}
-
-	list, ok := input.([]interface{})
-	if ok {
-		out := make([]interface{}, len(list))
-		originals := make([]string, 0)
-		for i, v := range list {
-			replaced, childOriginals := replaceValuesRecursive(v, old, new)
-			out[i] = replaced
-			originals = append(originals, childOriginals...)
 		}
 		return out, originals
 	}
@@ -953,6 +1070,16 @@ func matchesAny(candidate string, regex []*regexp.Regexp) bool {
 		}
 	}
 	return false
+}
+
+func shouldKeepCandidate(candidate string, include []*regexp.Regexp, exclude []*regexp.Regexp, mode includeMode) bool {
+	if !matchesInclude(candidate, include, mode) {
+		return false
+	}
+	if matchesAny(candidate, exclude) {
+		return false
+	}
+	return true
 }
 
 func decodeYAMLDocuments(in []byte) ([]*yaml.Node, error) {
