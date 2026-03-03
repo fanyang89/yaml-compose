@@ -605,3 +605,16 @@ func TestComposeReturnsErrorForInvalidExtractLayerPath(t *testing.T) {
 	require.Error(err)
 	require.Contains(err.Error(), "invalid extract layer path")
 }
+
+func TestComposeOutputUsesTwoSpaceIndentForNestedLists(t *testing.T) {
+	require := require.New(t)
+
+	c := compose.NewMock("base.yaml", nil)
+	fs := c.GetFilesystem()
+	err := fs.WriteFile("base.yaml", []byte("app:\n  db:\n    ports:\n      - 5432\n"), 0755)
+	require.NoError(err)
+
+	out, err := c.Run()
+	require.NoError(err)
+	require.Contains(out, "ports:\n    - 5432\n")
+}

@@ -113,8 +113,8 @@ app:
     host: layer
     pool: 10
     ports:
-    - 5432
-    - 5433
+      - 5432
+      - 5433
 feature: null
 ```
 

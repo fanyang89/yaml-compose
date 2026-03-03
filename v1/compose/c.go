@@ -15,6 +15,8 @@ import (
 
 type marshalFunc func(interface{}) ([]byte, error)
 
+const yamlOutputIndentSpaces = 2
+
 func NewLayerComparator(layers []string) func(i, j int) bool {
 	return func(i, j int) bool {
 		ap, aname := part(layers[i])
@@ -108,8 +110,22 @@ func NewWithFs(base string, layers []string, fs afero.Fs) *Compose {
 		Base:    base,
 		Layers:  layers,
 		fs:      &afero.Afero{Fs: fs},
-		marshal: yaml.Marshal,
+		marshal: marshalYAML,
 	}
+}
+
+func marshalYAML(in interface{}) ([]byte, error) {
+	var out bytes.Buffer
+	encoder := yaml.NewEncoder(&out)
+	encoder.SetIndent(yamlOutputIndentSpaces)
+	if err := encoder.Encode(in); err != nil {
+		_ = encoder.Close()
+		return nil, err
+	}
+	if err := encoder.Close(); err != nil {
+		return nil, err
+	}
+	return out.Bytes(), nil
 }
 
 func (c *Compose) GetFilesystem() *afero.Afero {
