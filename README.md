@@ -82,10 +82,15 @@ More commands:
 yaml-compose base.yaml
 yaml-compose base.yaml -o out.yaml
 yaml-compose base.yaml --layer 2-debug.yaml
+yaml-compose --base ./config/base.yaml --layer-dir ./config/layers
+yaml-compose base.yaml --var URL=https://api.example.com --var ENV=prod
 ```
 
+- `--base`: base yaml file path (alternative to positional argument).
+- `--layer-dir`: layer yaml directory path (default: `<base>.d`).
 - `-o, --output`: write composed YAML to a file.
 - `--layer`: run only one layer file (useful for debugging a specific layer).
+- `--var`: inject template vars for layer rendering (`KEY=VALUE`, repeatable).
 
 ## Merge Rules At A Glance
 

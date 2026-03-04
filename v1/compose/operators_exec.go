@@ -1,6 +1,9 @@
 package compose
 
-import "fmt"
+import (
+	"errors"
+	"fmt"
+)
 
 type operatorExecutionResult struct {
 	state       map[string]any
@@ -37,6 +40,9 @@ func (c *Compose) applyLayerOperator(layer map[string]any, operator layerTransfo
 	}
 
 	if err := setMapValueAtPath(layer, operator.targetPath, output); err != nil {
+		if operator.ignoreTargetNotFound && errors.Is(err, errPathSelectorNoMatch) {
+			return layer, state, nil
+		}
 		return nil, nil, err
 	}
 
@@ -109,6 +115,8 @@ func (c *Compose) executeOperator(operator layerTransform, input any, state map[
 		return executeListFilterOperator(input, operator, state)
 	case transformKindListExtract:
 		return executeListExtractOperator(input, operator, state)
+	case transformKindListRemove:
+		return executeListRemoveOperator(input, operator, state)
 	case transformKindReplaceVals:
 		return c.executeReplaceValuesOperator(input, operator, state)
 	default:
@@ -136,6 +144,12 @@ func executeListFilterOperator(input any, operator layerTransform, state map[str
 func executeListExtractOperator(input any, operator layerTransform, state map[string]any) (operatorExecutionResult, error) {
 	return executeListOutputOperator(input, operator.sourcePath, state, func(inputList []any) (any, error) {
 		return applyListExtract(inputList, operator.listExtract)
+	})
+}
+
+func executeListRemoveOperator(input any, operator layerTransform, state map[string]any) (operatorExecutionResult, error) {
+	return executeListOutputOperator(input, operator.sourcePath, state, func(inputList []any) (any, error) {
+		return applyListRemove(inputList, operator.listRemove)
 	})
 }
 

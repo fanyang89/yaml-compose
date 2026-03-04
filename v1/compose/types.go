@@ -44,6 +44,7 @@ type layerOperatorMetadata struct {
 	Merge       mergeMetadata              `yaml:"merge"`
 	ListFilter  layerListFilterMetadata    `yaml:"list_filter"`
 	ListExtract layerListExtractMetadata   `yaml:"list_extract"`
+	ListRemove  layerListRemoveMetadata    `yaml:"list_remove"`
 	ReplaceVals layerReplaceValuesMetadata `yaml:"replace_values"`
 }
 
@@ -68,6 +69,7 @@ type layerTransformMetadata struct {
 	Target      layerTransformTarget       `yaml:"target"`
 	ListFilter  layerListFilterMetadata    `yaml:"list_filter"`
 	ListExtract layerListExtractMetadata   `yaml:"list_extract"`
+	ListRemove  layerListRemoveMetadata    `yaml:"list_remove"`
 	ReplaceVals layerReplaceValuesMetadata `yaml:"replace_values"`
 }
 
@@ -78,16 +80,23 @@ type layerTransformSource struct {
 }
 
 type layerTransformTarget struct {
-	Path  string        `yaml:"path"`
-	Merge mergeMetadata `yaml:"merge"`
-	List  string        `yaml:"list"`
+	Path           string        `yaml:"path"`
+	Merge          mergeMetadata `yaml:"merge"`
+	List           string        `yaml:"list"`
+	IgnoreNotFound bool          `yaml:"ignore_not_found"`
 }
 
 type layerListFilterMetadata struct {
-	MatchPath   string   `yaml:"match_path"`
-	Include     []string `yaml:"include"`
-	Exclude     []string `yaml:"exclude"`
-	IncludeMode string   `yaml:"include_mode"`
+	MatchPath   string                         `yaml:"match_path"`
+	Include     []string                       `yaml:"include"`
+	Exclude     []string                       `yaml:"exclude"`
+	IncludeMode string                         `yaml:"include_mode"`
+	Rewrite     layerListFilterRewriteMetadata `yaml:"rewrite"`
+}
+
+type layerListFilterRewriteMetadata struct {
+	Prefix string `yaml:"prefix"`
+	Path   string `yaml:"path"`
 }
 
 type layerListExtractMetadata struct {
@@ -104,18 +113,33 @@ type layerReplaceValuesMetadata struct {
 	PrintOriginal bool   `yaml:"print_original"`
 }
 
+type layerListRemoveMetadata struct {
+	MatchPath string                      `yaml:"match_path"`
+	When      layerListRemoveWhenMetadata `yaml:"when"`
+	Remove    string                      `yaml:"remove"`
+}
+
+type layerListRemoveWhenMetadata struct {
+	IsEmpty   bool `yaml:"is_empty"`
+	Equals    any  `yaml:"equals"`
+	NotEquals any  `yaml:"not_equals"`
+	Has       any  `yaml:"has"`
+}
+
 type layerTransform struct {
-	kind          string
-	sourceFrom    string
-	sourceFile    string
-	sourcePath    []string
-	hasSourcePath bool
-	targetPath    []string
-	targetMerge   layerMergeStrategy
-	listFilter    layerListFilter
-	listExtract   layerListExtract
-	replaceVals   layerReplaceValues
-	merge         layerMergeStrategy
+	kind                 string
+	sourceFrom           string
+	sourceFile           string
+	sourcePath           []string
+	hasSourcePath        bool
+	targetPath           []string
+	targetMerge          layerMergeStrategy
+	ignoreTargetNotFound bool
+	listFilter           layerListFilter
+	listExtract          layerListExtract
+	listRemove           layerListRemove
+	replaceVals          layerReplaceValues
+	merge                layerMergeStrategy
 }
 
 type parsedOperatorSource struct {
@@ -130,6 +154,12 @@ type layerListFilter struct {
 	include     []*regexp.Regexp
 	exclude     []*regexp.Regexp
 	includeMode includeMode
+	rewrite     *layerListFilterRewrite
+}
+
+type layerListFilterRewrite struct {
+	prefix string
+	path   []string
 }
 
 type layerListExtract struct {
@@ -146,12 +176,36 @@ type layerReplaceValues struct {
 	printOriginal bool
 }
 
+type listRemoveMode string
+
+const (
+	listRemoveAll    listRemoveMode = "all"
+	listRemoveSingle listRemoveMode = "single"
+)
+
+type layerListRemove struct {
+	matchPath []string
+	remove    listRemoveMode
+	predicate listRemovePredicate
+	value     any
+}
+
+type listRemovePredicate string
+
+const (
+	listRemovePredicateIsEmpty   listRemovePredicate = "is_empty"
+	listRemovePredicateEquals    listRemovePredicate = "equals"
+	listRemovePredicateNotEquals listRemovePredicate = "not_equals"
+	listRemovePredicateHas       listRemovePredicate = "has"
+)
+
 type includeMode string
 
 const (
 	transformKindMerge       = "merge"
 	transformKindListFilter  = "list_filter"
 	transformKindListExtract = "list_extract"
+	transformKindListRemove  = "list_remove"
 	transformKindReplaceVals = "replace_values"
 
 	transformSourceFile  = "file"

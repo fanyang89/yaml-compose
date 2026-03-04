@@ -17,6 +17,7 @@
     path: inventory.backends
   target:
     path: app.backend_names
+    ignore_not_found: true
     merge:
       defaults:
         list: override|append|prepend
@@ -32,6 +33,7 @@
 - Extracted value must be string
 - `include_mode` default is `any`
 - `target.merge.defaults.list` default is `override`
+- `target.ignore_not_found` default is `false`; when true, selector targets that match no item are skipped
 
 ## Example
 

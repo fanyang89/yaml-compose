@@ -1,10 +1,13 @@
 package compose
 
 import (
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
 )
+
+var errPathSelectorNoMatch = errors.New("selector matched no array item")
 
 // getValueAtPath traverses root following the given path segments and returns
 // the value found, or (nil, false) if any segment is not reachable.
@@ -196,7 +199,7 @@ func findUniqueArrayObjectBySelector(items []any, key string, expected string) (
 	}
 
 	if len(matches) == 0 {
-		return 0, fmt.Errorf("selector [%s=%s] matched no array item", key, expected)
+		return 0, fmt.Errorf("%w: selector [%s=%s]", errPathSelectorNoMatch, key, expected)
 	}
 	if len(matches) > 1 {
 		return 0, fmt.Errorf("selector [%s=%s] matched multiple array items", key, expected)

@@ -25,6 +25,23 @@ func parseLayer(in []byte) (map[string]any, []layerTransform, error) {
 		if err != nil {
 			return nil, nil, err
 		}
+
+		if rawOperators, hasOperators := data["operators"]; hasOperators && looksLikeOperatorMetadata(rawOperators) {
+			if len(data) == 1 {
+				meta, err := decodeLayerMetadata(docs[0])
+				if err != nil {
+					return nil, nil, err
+				}
+				operators, err := buildLayerOperators(meta)
+				if err != nil {
+					return nil, nil, err
+				}
+				return map[string]any{}, operators, nil
+			}
+
+			return nil, nil, fmt.Errorf("layer with operators metadata must use two YAML documents separated by ---")
+		}
+
 		return data, []layerTransform{defaultMergeOperator()}, nil
 	case 2:
 		meta, err := decodeLayerMetadata(docs[0])
@@ -43,6 +60,26 @@ func parseLayer(in []byte) (map[string]any, []layerTransform, error) {
 	default:
 		return nil, nil, fmt.Errorf("expected at most two YAML documents (metadata and data), got %d", len(docs))
 	}
+}
+
+func looksLikeOperatorMetadata(raw any) bool {
+	ops, ok := raw.([]any)
+	if !ok || len(ops) == 0 {
+		return false
+	}
+
+	for _, op := range ops {
+		m, ok := op.(map[string]any)
+		if !ok {
+			return false
+		}
+		kind, ok := m["kind"].(string)
+		if !ok || kind == "" {
+			return false
+		}
+	}
+
+	return true
 }
 
 // defaultMergeOperator returns the implicit merge operator used when no

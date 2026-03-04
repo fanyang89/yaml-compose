@@ -25,12 +25,17 @@
     include: ["prod-"]
     exclude: ["-canary$"]
     include_mode: any|all
+    rewrite:
+      prefix: svc-
+      path: name
 ```
 
 - Input list can be `[]string` or `[]object`
 - For `[]object`, `match_path` is required and must resolve to a string
 - `include_mode` default is `any`
 - `target.merge.defaults.list` default is `override`
+- `rewrite.prefix` prepends the matched item field
+- `rewrite.path` is optional; default is `match_path`
 
 ## Example
 

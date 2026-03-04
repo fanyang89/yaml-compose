@@ -559,6 +559,134 @@ app:
 	require.Equal("prod-b", second["name"])
 }
 
+func TestComposeTransformListFilterAddsPrefixToMatchedObjectField(t *testing.T) {
+	require := require.New(t)
+
+	c := compose.NewMock("base.yaml", []string{"1-layer.yaml"})
+	fs := c.GetFilesystem()
+
+	base := `app:
+  backends: []
+`
+	layer := `operators:
+  - kind: list_filter
+    source:
+      file: source.yaml
+      path: inventory.backends
+    target:
+      path: app.backends
+    list_filter:
+      match_path: name
+      include: ["prod-"]
+      rewrite:
+        prefix: svc-
+---
+app:
+  backends: []
+`
+	source := `inventory:
+  backends:
+    - name: prod-a
+      url: https://a
+    - name: dev-a
+      url: https://dev
+`
+	baseDir := writeBaseFile(t, fs, "base.yaml", base)
+	writeLayerFile(t, fs, baseDir, "1-layer.yaml", layer)
+	writeFile(t, fs, "source.yaml", source)
+
+	out, err := c.Run()
+	require.NoError(err)
+
+	var got map[string]any
+	err = yaml.Unmarshal([]byte(out), &got)
+	require.NoError(err)
+
+	app := got["app"].(map[string]any)
+	backends := app["backends"].([]any)
+	require.Len(backends, 1)
+	first := backends[0].(map[string]any)
+	require.Equal("svc-prod-a", first["name"])
+}
+
+func TestComposeTransformListFilterAddsPrefixToMatchedStringItem(t *testing.T) {
+	require := require.New(t)
+
+	c := compose.NewMock("base.yaml", []string{"1-layer.yaml"})
+	fs := c.GetFilesystem()
+
+	base := `app:
+  backends: []
+`
+	layer := `operators:
+  - kind: list_filter
+    source:
+      file: source.yaml
+      path: inventory.backends
+    target:
+      path: app.backends
+    list_filter:
+      include: ["prod-"]
+      rewrite:
+        prefix: svc-
+---
+app:
+  backends: []
+`
+	source := `inventory:
+  backends: [prod-a, dev-a]
+`
+	baseDir := writeBaseFile(t, fs, "base.yaml", base)
+	writeLayerFile(t, fs, baseDir, "1-layer.yaml", layer)
+	writeFile(t, fs, "source.yaml", source)
+
+	out, err := c.Run()
+	require.NoError(err)
+
+	var got map[string]any
+	err = yaml.Unmarshal([]byte(out), &got)
+	require.NoError(err)
+
+	app := got["app"].(map[string]any)
+	require.Equal([]any{"svc-prod-a"}, app["backends"])
+}
+
+func TestComposeTransformListFilterReturnsErrorWhenRewritePrefixMissing(t *testing.T) {
+	require := require.New(t)
+
+	c := compose.NewMock("base.yaml", []string{"1-layer.yaml"})
+	fs := c.GetFilesystem()
+
+	base := `app:
+  backends: []
+`
+	layer := `operators:
+  - kind: list_filter
+    source:
+      file: source.yaml
+      path: inventory.backends
+    target:
+      path: app.backends
+    list_filter:
+      include: ["prod-"]
+      rewrite:
+        path: name
+---
+app:
+  backends: []
+`
+	source := `inventory:
+  backends: [prod-a]
+`
+	baseDir := writeBaseFile(t, fs, "base.yaml", base)
+	writeLayerFile(t, fs, baseDir, "1-layer.yaml", layer)
+	writeFile(t, fs, "source.yaml", source)
+
+	_, err := c.Run()
+	require.Error(err)
+	require.Contains(err.Error(), "list_filter.rewrite.prefix")
+}
+
 func TestComposeTransformListFilterDefaultsTargetPathToSourcePath(t *testing.T) {
 	require := require.New(t)
 
@@ -1420,6 +1548,133 @@ app:
 	require.Contains(err.Error(), "matched no array item")
 }
 
+func TestComposeTransformListExtractIgnoresSelectorTargetWhenConfigured(t *testing.T) {
+	require := require.New(t)
+
+	c := compose.NewMock("base.yaml", []string{"1-layer.yaml"})
+	fs := c.GetFilesystem()
+
+	base := `app:
+  backends:
+    - name: worker
+      names: [existing]
+`
+	layer := `operators:
+  - kind: list_extract
+    source:
+      file: source.yaml
+      path: inventory.backends
+    target:
+      path: app.backends[name=api].names
+      ignore_not_found: true
+    list_extract:
+      extract_path: name
+---
+app:
+  backends:
+    - name: worker
+      names: [existing]
+`
+	source := `inventory:
+  backends:
+    - name: prod-a
+`
+	baseDir := writeBaseFile(t, fs, "base.yaml", base)
+	writeLayerFile(t, fs, baseDir, "1-layer.yaml", layer)
+	writeFile(t, fs, "source.yaml", source)
+
+	out, err := c.Run()
+	require.NoError(err)
+
+	var got map[string]any
+	err = yaml.Unmarshal([]byte(out), &got)
+	require.NoError(err)
+
+	app := got["app"].(map[string]any)
+	backends := app["backends"].([]any)
+	worker := backends[0].(map[string]any)
+	require.Equal([]any{"existing"}, worker["names"])
+}
+
+func TestComposeTransformListExtractIgnoreNotFoundStillErrorsOnMultipleSelectorMatches(t *testing.T) {
+	require := require.New(t)
+
+	c := compose.NewMock("base.yaml", []string{"1-layer.yaml"})
+	fs := c.GetFilesystem()
+
+	base := `app:
+  backends:
+    - name: api
+      names: []
+    - name: api
+      names: []
+`
+	layer := `operators:
+  - kind: list_extract
+    source:
+      file: source.yaml
+      path: inventory.backends
+    target:
+      path: app.backends[name=api].names
+      ignore_not_found: true
+    list_extract:
+      extract_path: name
+---
+app:
+  backends:
+    - name: api
+      names: []
+    - name: api
+      names: []
+`
+	source := `inventory:
+  backends:
+    - name: prod-a
+`
+	baseDir := writeBaseFile(t, fs, "base.yaml", base)
+	writeLayerFile(t, fs, baseDir, "1-layer.yaml", layer)
+	writeFile(t, fs, "source.yaml", source)
+
+	_, err := c.Run()
+	require.Error(err)
+	require.Contains(err.Error(), "matched multiple array items")
+}
+
+func TestComposeTransformListFilterReturnsErrorWhenIgnoreNotFoundConfigured(t *testing.T) {
+	require := require.New(t)
+
+	c := compose.NewMock("base.yaml", []string{"1-layer.yaml"})
+	fs := c.GetFilesystem()
+
+	base := `app:
+  backends: []
+`
+	layer := `operators:
+  - kind: list_filter
+    source:
+      file: source.yaml
+      path: inventory.backends
+    target:
+      path: app.backends
+      ignore_not_found: true
+    list_filter:
+      include: ["prod-"]
+---
+app:
+  backends: []
+`
+	source := `inventory:
+  backends: [prod-a]
+`
+	baseDir := writeBaseFile(t, fs, "base.yaml", base)
+	writeLayerFile(t, fs, baseDir, "1-layer.yaml", layer)
+	writeFile(t, fs, "source.yaml", source)
+
+	_, err := c.Run()
+	require.Error(err)
+	require.Contains(err.Error(), "only list_extract supports target.ignore_not_found")
+}
+
 func TestComposeTransformListExtractReturnsErrorWhenArrayTargetIndexOutOfRange(t *testing.T) {
 	require := require.New(t)
 
@@ -1902,4 +2157,564 @@ app:
 	_, err := c.Run()
 	require.Error(err)
 	require.Contains(err.Error(), "legacy metadata field")
+}
+
+func TestComposeReturnsErrorWhenOperatorsAndDataAreInSingleDocument(t *testing.T) {
+	require := require.New(t)
+
+	c := compose.NewMock("base.yaml", []string{"1-layer.yaml"})
+	fs := c.GetFilesystem()
+
+	base := `proxy-groups:
+  - name: 家宽
+    proxies: []
+`
+	layer := `operators:
+  - kind: list_remove
+    source:
+      from: state
+      path: proxy-groups
+    target:
+      path: proxy-groups
+    list_remove:
+      match_path: proxies
+      when:
+        is_empty: true
+      remove: single
+proxy-groups:
+  - name: 家宽
+    proxies: []
+`
+	baseDir := writeBaseFile(t, fs, "base.yaml", base)
+	writeLayerFile(t, fs, baseDir, "1-layer.yaml", layer)
+
+	_, err := c.Run()
+	require.Error(err)
+	require.Contains(err.Error(), "must use two YAML documents")
+}
+
+func TestComposeRendersLayerTemplateWithCLIVars(t *testing.T) {
+	require := require.New(t)
+
+	c := compose.NewMock("base.yaml", []string{"1-layer.yaml"})
+	c.SetTemplateVars(map[string]string{"URL": "https://api.example.com"})
+	fs := c.GetFilesystem()
+
+	base := `app:
+  url: https://base.example.com
+`
+	layer := `app:
+  url: "{{.URL}}"
+`
+	baseDir := writeBaseFile(t, fs, "base.yaml", base)
+	writeLayerFile(t, fs, baseDir, "1-layer.yaml", layer)
+
+	out, err := c.Run()
+	require.NoError(err)
+
+	var got map[string]any
+	err = yaml.Unmarshal([]byte(out), &got)
+	require.NoError(err)
+
+	app := got["app"].(map[string]any)
+	require.Equal("https://api.example.com", app["url"])
+}
+
+func TestComposeReturnsErrorWhenLayerTemplateVariableMissing(t *testing.T) {
+	require := require.New(t)
+
+	c := compose.NewMock("base.yaml", []string{"1-layer.yaml"})
+	c.SetTemplateVars(map[string]string{"ENV": "prod"})
+	fs := c.GetFilesystem()
+
+	base := "app: {}\n"
+	layer := `app:
+  url: "{{.URL}}"
+`
+	baseDir := writeBaseFile(t, fs, "base.yaml", base)
+	writeLayerFile(t, fs, baseDir, "1-layer.yaml", layer)
+
+	_, err := c.Run()
+	require.Error(err)
+	require.Contains(err.Error(), "failed to render layer template")
+	require.Contains(err.Error(), "map has no entry for key")
+}
+
+func TestComposeReturnsErrorWhenLayerTemplateIsInvalid(t *testing.T) {
+	require := require.New(t)
+
+	c := compose.NewMock("base.yaml", []string{"1-layer.yaml"})
+	c.SetTemplateVars(map[string]string{"URL": "https://api.example.com"})
+	fs := c.GetFilesystem()
+
+	base := "app: {}\n"
+	layer := `app:
+  url: "{{.URL}"
+`
+	baseDir := writeBaseFile(t, fs, "base.yaml", base)
+	writeLayerFile(t, fs, baseDir, "1-layer.yaml", layer)
+
+	_, err := c.Run()
+	require.Error(err)
+	require.Contains(err.Error(), "failed to parse layer template")
+}
+
+func TestComposeDoesNotRenderBaseTemplate(t *testing.T) {
+	require := require.New(t)
+
+	c := compose.NewMock("base.yaml", []string{"1-layer.yaml"})
+	c.SetTemplateVars(map[string]string{"URL": "https://api.example.com"})
+	fs := c.GetFilesystem()
+
+	base := `app:
+  url: "{{.URL}}"
+`
+	layer := `app:
+  name: prod
+`
+	baseDir := writeBaseFile(t, fs, "base.yaml", base)
+	writeLayerFile(t, fs, baseDir, "1-layer.yaml", layer)
+
+	out, err := c.Run()
+	require.NoError(err)
+
+	var got map[string]any
+	err = yaml.Unmarshal([]byte(out), &got)
+	require.NoError(err)
+
+	app := got["app"].(map[string]any)
+	require.Equal("{{.URL}}", app["url"])
+	require.Equal("prod", app["name"])
+}
+
+func TestComposeReadsLayersFromCustomLayerDir(t *testing.T) {
+	require := require.New(t)
+
+	c := compose.NewMock("base.yaml", []string{"1-layer.yaml"})
+	c.SetLayerDir("layers")
+	fs := c.GetFilesystem()
+
+	base := `app:
+  name: base
+`
+	layer := `app:
+  name: custom
+`
+	writeFile(t, fs, "base.yaml", base)
+	err := fs.MkdirAll("layers", 0755)
+	require.NoError(err)
+	writeFile(t, fs, "layers/1-layer.yaml", layer)
+
+	out, err := c.Run()
+	require.NoError(err)
+
+	var got map[string]any
+	err = yaml.Unmarshal([]byte(out), &got)
+	require.NoError(err)
+
+	app := got["app"].(map[string]any)
+	require.Equal("custom", app["name"])
+}
+
+func TestComposeTransformListRemoveRemovesAllEmptyMatches(t *testing.T) {
+	require := require.New(t)
+
+	c := compose.NewMock("base.yaml", []string{"1-layer.yaml"})
+	fs := c.GetFilesystem()
+
+	base := `app:
+  backends:
+    - name: keep
+      meta:
+        tags: [prod]
+    - name: empty-list
+      meta:
+        tags: []
+    - name: empty-string
+      meta:
+        tags: ""
+    - name: empty-map
+      meta:
+        tags: {}
+    - name: null-value
+      meta:
+        tags: null
+`
+	layer := `operators:
+  - kind: list_remove
+    source:
+      from: state
+      path: app.backends
+    target:
+      path: app.backends
+    list_remove:
+      match_path: meta.tags
+      when:
+        is_empty: true
+      remove: all
+---
+app: {}
+`
+	baseDir := writeBaseFile(t, fs, "base.yaml", base)
+	writeLayerFile(t, fs, baseDir, "1-layer.yaml", layer)
+
+	out, err := c.Run()
+	require.NoError(err)
+
+	var got map[string]any
+	err = yaml.Unmarshal([]byte(out), &got)
+	require.NoError(err)
+
+	app := got["app"].(map[string]any)
+	backends := app["backends"].([]any)
+	require.Len(backends, 1)
+	first := backends[0].(map[string]any)
+	require.Equal("keep", first["name"])
+}
+
+func TestComposeTransformListRemoveSingleRemovesFirstMatchOnly(t *testing.T) {
+	require := require.New(t)
+
+	c := compose.NewMock("base.yaml", []string{"1-layer.yaml"})
+	fs := c.GetFilesystem()
+
+	base := `app:
+  backends:
+    - name: first-empty
+      meta:
+        tags: []
+    - name: second-empty
+      meta:
+        tags: ""
+    - name: keep
+      meta:
+        tags: [prod]
+`
+	layer := `operators:
+  - kind: list_remove
+    source:
+      from: state
+      path: app.backends
+    target:
+      path: app.backends
+    list_remove:
+      match_path: meta.tags
+      when:
+        is_empty: true
+      remove: single
+---
+app: {}
+`
+	baseDir := writeBaseFile(t, fs, "base.yaml", base)
+	writeLayerFile(t, fs, baseDir, "1-layer.yaml", layer)
+
+	out, err := c.Run()
+	require.NoError(err)
+
+	var got map[string]any
+	err = yaml.Unmarshal([]byte(out), &got)
+	require.NoError(err)
+
+	app := got["app"].(map[string]any)
+	backends := app["backends"].([]any)
+	require.Len(backends, 2)
+	require.Equal("second-empty", backends[0].(map[string]any)["name"])
+	require.Equal("keep", backends[1].(map[string]any)["name"])
+}
+
+func TestComposeTransformListRemoveSingleRemovesProxyGroupWithEmptyProxies(t *testing.T) {
+	require := require.New(t)
+
+	c := compose.NewMock("base.yaml", []string{"1-layer.yaml"})
+	fs := c.GetFilesystem()
+
+	base := `proxy-groups:
+  - name: 家宽
+    proxies: []
+    type: select
+`
+	layer := `operators:
+  - kind: list_remove
+    source:
+      from: state
+      path: proxy-groups
+    target:
+      path: proxy-groups
+    list_remove:
+      match_path: proxies
+      when:
+        is_empty: true
+      remove: single
+---
+proxy-groups: []
+`
+	baseDir := writeBaseFile(t, fs, "base.yaml", base)
+	writeLayerFile(t, fs, baseDir, "1-layer.yaml", layer)
+
+	out, err := c.Run()
+	require.NoError(err)
+
+	var got map[string]any
+	err = yaml.Unmarshal([]byte(out), &got)
+	require.NoError(err)
+
+	groups := got["proxy-groups"].([]any)
+	require.Len(groups, 0)
+}
+
+func TestComposeTransformListRemoveReturnsErrorWhenMatchPathMissing(t *testing.T) {
+	require := require.New(t)
+
+	c := compose.NewMock("base.yaml", []string{"1-layer.yaml"})
+	fs := c.GetFilesystem()
+
+	base := `app:
+  backends:
+    - name: a
+      meta: {}
+`
+	layer := `operators:
+  - kind: list_remove
+    source:
+      from: state
+      path: app.backends
+    target:
+      path: app.backends
+    list_remove:
+      match_path: meta.tags
+      when:
+        is_empty: true
+---
+app: {}
+`
+	baseDir := writeBaseFile(t, fs, "base.yaml", base)
+	writeLayerFile(t, fs, baseDir, "1-layer.yaml", layer)
+
+	_, err := c.Run()
+	require.Error(err)
+	require.Contains(err.Error(), "match_path \"meta.tags\" not found")
+}
+
+func TestComposeTransformListRemoveReturnsErrorForInvalidRemoveMode(t *testing.T) {
+	require := require.New(t)
+
+	c := compose.NewMock("base.yaml", []string{"1-layer.yaml"})
+	fs := c.GetFilesystem()
+
+	base := "app:\n  backends: []\n"
+	layer := `operators:
+  - kind: list_remove
+    source:
+      from: state
+      path: app.backends
+    target:
+      path: app.backends
+    list_remove:
+      match_path: meta.tags
+      when:
+        is_empty: true
+      remove: invalid
+---
+app: {}
+`
+	baseDir := writeBaseFile(t, fs, "base.yaml", base)
+	writeLayerFile(t, fs, baseDir, "1-layer.yaml", layer)
+
+	_, err := c.Run()
+	require.Error(err)
+	require.Contains(err.Error(), "list_remove.remove")
+}
+
+func TestComposeTransformListRemoveReturnsErrorWhenIsEmptyIsFalse(t *testing.T) {
+	require := require.New(t)
+
+	c := compose.NewMock("base.yaml", []string{"1-layer.yaml"})
+	fs := c.GetFilesystem()
+
+	base := "app:\n  backends: []\n"
+	layer := `operators:
+  - kind: list_remove
+    source:
+      from: state
+      path: app.backends
+    target:
+      path: app.backends
+    list_remove:
+      match_path: meta.tags
+      when:
+        is_empty: false
+---
+app: {}
+`
+	baseDir := writeBaseFile(t, fs, "base.yaml", base)
+	writeLayerFile(t, fs, baseDir, "1-layer.yaml", layer)
+
+	_, err := c.Run()
+	require.Error(err)
+	require.Contains(err.Error(), "list_remove.when")
+}
+
+func TestComposeTransformListRemoveRemovesWhenEqualsMatches(t *testing.T) {
+	require := require.New(t)
+
+	c := compose.NewMock("base.yaml", []string{"1-layer.yaml"})
+	fs := c.GetFilesystem()
+
+	base := `app:
+  backends:
+    - name: api
+      meta:
+        role: api
+    - name: worker
+      meta:
+        role: worker
+`
+	layer := `operators:
+  - kind: list_remove
+    source:
+      from: state
+      path: app.backends
+    target:
+      path: app.backends
+    list_remove:
+      match_path: meta.role
+      when:
+        equals: api
+---
+app: {}
+`
+	baseDir := writeBaseFile(t, fs, "base.yaml", base)
+	writeLayerFile(t, fs, baseDir, "1-layer.yaml", layer)
+
+	out, err := c.Run()
+	require.NoError(err)
+
+	var got map[string]any
+	err = yaml.Unmarshal([]byte(out), &got)
+	require.NoError(err)
+
+	app := got["app"].(map[string]any)
+	backends := app["backends"].([]any)
+	require.Len(backends, 1)
+	require.Equal("worker", backends[0].(map[string]any)["name"])
+}
+
+func TestComposeTransformListRemoveRemovesWhenNotEqualsMatches(t *testing.T) {
+	require := require.New(t)
+
+	c := compose.NewMock("base.yaml", []string{"1-layer.yaml"})
+	fs := c.GetFilesystem()
+
+	base := `app:
+  backends:
+    - name: api
+      meta:
+        role: api
+    - name: worker
+      meta:
+        role: worker
+`
+	layer := `operators:
+  - kind: list_remove
+    source:
+      from: state
+      path: app.backends
+    target:
+      path: app.backends
+    list_remove:
+      match_path: meta.role
+      when:
+        not_equals: api
+---
+app: {}
+`
+	baseDir := writeBaseFile(t, fs, "base.yaml", base)
+	writeLayerFile(t, fs, baseDir, "1-layer.yaml", layer)
+
+	out, err := c.Run()
+	require.NoError(err)
+
+	var got map[string]any
+	err = yaml.Unmarshal([]byte(out), &got)
+	require.NoError(err)
+
+	app := got["app"].(map[string]any)
+	backends := app["backends"].([]any)
+	require.Len(backends, 1)
+	require.Equal("api", backends[0].(map[string]any)["name"])
+}
+
+func TestComposeTransformListRemoveRemovesWhenHasMatches(t *testing.T) {
+	require := require.New(t)
+
+	c := compose.NewMock("base.yaml", []string{"1-layer.yaml"})
+	fs := c.GetFilesystem()
+
+	base := `app:
+  backends:
+    - name: api
+      meta:
+        tags: [prod, blue]
+    - name: worker
+      meta:
+        tags: [green]
+`
+	layer := `operators:
+  - kind: list_remove
+    source:
+      from: state
+      path: app.backends
+    target:
+      path: app.backends
+    list_remove:
+      match_path: meta.tags
+      when:
+        has: blue
+---
+app: {}
+`
+	baseDir := writeBaseFile(t, fs, "base.yaml", base)
+	writeLayerFile(t, fs, baseDir, "1-layer.yaml", layer)
+
+	out, err := c.Run()
+	require.NoError(err)
+
+	var got map[string]any
+	err = yaml.Unmarshal([]byte(out), &got)
+	require.NoError(err)
+
+	app := got["app"].(map[string]any)
+	backends := app["backends"].([]any)
+	require.Len(backends, 1)
+	require.Equal("worker", backends[0].(map[string]any)["name"])
+}
+
+func TestComposeTransformListRemoveReturnsErrorWhenMultipleConditionsSet(t *testing.T) {
+	require := require.New(t)
+
+	c := compose.NewMock("base.yaml", []string{"1-layer.yaml"})
+	fs := c.GetFilesystem()
+
+	base := "app:\n  backends: []\n"
+	layer := `operators:
+  - kind: list_remove
+    source:
+      from: state
+      path: app.backends
+    target:
+      path: app.backends
+    list_remove:
+      match_path: meta.tags
+      when:
+        is_empty: true
+        equals: []
+---
+app: {}
+`
+	baseDir := writeBaseFile(t, fs, "base.yaml", base)
+	writeLayerFile(t, fs, baseDir, "1-layer.yaml", layer)
+
+	_, err := c.Run()
+	require.Error(err)
+	require.Contains(err.Error(), "only one condition is supported")
 }

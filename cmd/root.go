@@ -17,6 +17,8 @@ import (
 type composeRunner interface {
 	Run() (string, error)
 	SetTransformLogWriter(io.Writer)
+	SetTemplateVars(map[string]string)
+	SetLayerDir(string)
 }
 
 type commandDeps struct {
@@ -39,21 +41,32 @@ func defaultCommandDeps() commandDeps {
 
 func newRootCmd(deps commandDeps) *cobra.Command {
 	flagOutput := ""
+	flagBase := ""
+	flagLayerDir := ""
 	flagLayer := ""
+	flagVars := []string{}
 	cmd := &cobra.Command{
 		Use:  "yaml-compose [YAML-FILE]",
-		Args: cobra.ExactArgs(1),
+		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runRootCommand(args[0], flagOutput, flagLayer, deps)
+			base, err := resolveBasePath(args, flagBase)
+			if err != nil {
+				return err
+			}
+			return runRootCommand(base, flagLayerDir, flagOutput, flagLayer, flagVars, deps)
 		},
 	}
+	cmd.SilenceUsage = true
 
+	cmd.Flags().StringVar(&flagBase, "base", "", "base yaml file path")
+	cmd.Flags().StringVar(&flagLayerDir, "layer-dir", "", "layer yaml directory path")
 	cmd.Flags().StringVarP(&flagOutput, "output", "o", "", "config file")
 	cmd.Flags().StringVar(&flagLayer, "layer", "", "run only one layer file (for debugging)")
+	cmd.Flags().StringArrayVar(&flagVars, "var", nil, "template variable in KEY=VALUE format (repeatable)")
 	return cmd
 }
 
-func runRootCommand(base, output, layer string, deps commandDeps) error {
+func runRootCommand(base, layerDir, output, layer string, rawVars []string, deps commandDeps) error {
 	exists, err := fsutils.FileExistsOn(deps.fs, base)
 	if err != nil {
 		return fmt.Errorf("check base file: %w", err)
@@ -62,16 +75,20 @@ func runRootCommand(base, output, layer string, deps commandDeps) error {
 		return fmt.Errorf("%s not found", base)
 	}
 
-	baseDir := base + ".d"
-	exists, err = fsutils.DirExistsOn(deps.fs, baseDir)
+	resolvedLayerDir := layerDir
+	if resolvedLayerDir == "" {
+		resolvedLayerDir = base + ".d"
+	}
+
+	exists, err = fsutils.DirExistsOn(deps.fs, resolvedLayerDir)
 	if err != nil {
 		return fmt.Errorf("check layer directory: %w", err)
 	}
 	if !exists {
-		return fmt.Errorf("%s not found", baseDir)
+		return fmt.Errorf("%s not found", resolvedLayerDir)
 	}
 
-	layerInfos, err := afero.ReadDir(deps.fs, baseDir)
+	layerInfos, err := afero.ReadDir(deps.fs, resolvedLayerDir)
 	if err != nil {
 		return fmt.Errorf("read layer directory: %w", err)
 	}
@@ -83,8 +100,15 @@ func runRootCommand(base, output, layer string, deps commandDeps) error {
 		}
 	}
 
+	templateVars, err := parseTemplateVars(rawVars)
+	if err != nil {
+		return err
+	}
+
 	c := deps.newCompose(base, layers, deps.fs)
 	c.SetTransformLogWriter(deps.stderr)
+	c.SetTemplateVars(templateVars)
+	c.SetLayerDir(resolvedLayerDir)
 	ret, err := c.Run()
 	if err != nil {
 		return fmt.Errorf("compose files: %w", err)
@@ -125,6 +149,37 @@ func collectLayerFilenames(layerInfos []os.FileInfo) []string {
 		}
 	}
 	return layers
+}
+
+func parseTemplateVars(rawVars []string) (map[string]string, error) {
+	vars := make(map[string]string, len(rawVars))
+	for _, raw := range rawVars {
+		key, value, ok := strings.Cut(raw, "=")
+		if !ok {
+			return nil, fmt.Errorf("invalid --var %q: expected KEY=VALUE", raw)
+		}
+		if key == "" {
+			return nil, fmt.Errorf("invalid --var %q: key cannot be empty", raw)
+		}
+		vars[key] = value
+	}
+	return vars, nil
+}
+
+func resolveBasePath(args []string, flagBase string) (string, error) {
+	if len(args) == 1 && flagBase != "" {
+		return "", fmt.Errorf("base path must be provided either as argument or --base, not both")
+	}
+
+	if flagBase != "" {
+		return flagBase, nil
+	}
+
+	if len(args) == 1 {
+		return args[0], nil
+	}
+
+	return "", fmt.Errorf("base path is required (argument or --base)")
 }
 
 func execute(commandExecutor func() error, exit func(int)) {
