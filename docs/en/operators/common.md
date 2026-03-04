@@ -42,10 +42,28 @@ target:
       list: override|append|prepend
 ```
 
-- Used by `list_filter`, `list_extract`, and `replace_values`
+- Used by `list_filter`, `list_extract`, `list_remove`, and `replace_values`
 - If omitted on list operators, defaults to `source.path`
 - `target.merge.defaults.list` is supported by `list_filter` and `list_extract` only, default `override`
 - `target.merge` supports `defaults.list` only
+- `target.ignore_not_found` is supported by `list_extract` only, default `false`
+
+## Layer Template Variables
+
+You can inject variables from CLI and render them in layer files:
+
+```bash
+yaml-compose base.yaml --var URL=https://api.example.com --var ENV=prod
+```
+
+```yaml
+app:
+  url: "{{.URL}}"
+```
+
+- Template rendering applies to layer files only
+- Base file and `source.from=file` inputs are not templated
+- Missing keys return an error when rendering
 
 ## Path Syntax
 

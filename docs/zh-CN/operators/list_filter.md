@@ -25,12 +25,17 @@
     include: ["prod-"]
     exclude: ["-canary$"]
     include_mode: any|all
+    rewrite:
+      prefix: svc-
+      path: name
 ```
 
 - 输入列表支持 `[]string` 与 `[]object`
 - `[]object` 必须设置 `match_path`，且该路径值必须是字符串
 - `include_mode` 默认值为 `any`
 - `target.merge.defaults.list` 默认值为 `override`
+- `rewrite.prefix` 用于给命中的字段增加前缀
+- `rewrite.path` 可选，默认使用 `match_path`
 
 ## 示例
 

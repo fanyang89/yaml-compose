@@ -17,6 +17,7 @@
     path: inventory.backends
   target:
     path: app.backend_names
+    ignore_not_found: true
     merge:
       defaults:
         list: override|append|prepend
@@ -32,6 +33,7 @@
 - 提取值必须是字符串
 - `include_mode` 默认值为 `any`
 - `target.merge.defaults.list` 默认值为 `override`
+- `target.ignore_not_found` 默认值为 `false`；为 `true` 时，选择器路径未命中会跳过写入
 
 ## 示例
 

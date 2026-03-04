@@ -11,6 +11,7 @@
 - [`merge` 算子](operators/merge.md)
 - [`list_filter` 算子](operators/list_filter.md)
 - [`list_extract` 算子](operators/list_extract.md)
+- [`list_remove` 算子](operators/list_remove.md)
 - [`replace_values` 算子](operators/replace_values.md)
 
 ## 算子选型速查
@@ -18,6 +19,7 @@
 - 将 layer/file/state 数据合并到目标：[`merge`](operators/merge.md)
 - 按条件筛选列表项：[`list_filter`](operators/list_filter.md)
 - 从列表项提取字段到目标路径：[`list_extract`](operators/list_extract.md)
+- 按条件删除列表项：[`list_remove`](operators/list_remove.md)
 - 按映射规则替换值：[`replace_values`](operators/replace_values.md)
 
 ## 重要说明

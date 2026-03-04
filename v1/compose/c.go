@@ -6,17 +6,20 @@ import (
 	"io"
 	"path/filepath"
 	"sort"
+	"text/template"
 
 	"github.com/spf13/afero"
 	"gopkg.in/yaml.v3"
 )
 
 type Compose struct {
-	Base    string
-	Layers  []string
-	fs      *afero.Afero
-	marshal marshalFunc
-	logOut  io.Writer
+	Base     string
+	Layers   []string
+	LayerDir string
+	fs       *afero.Afero
+	marshal  marshalFunc
+	logOut   io.Writer
+	tplVars  map[string]string
 }
 
 func New(base string, layers []string) *Compose {
@@ -63,6 +66,23 @@ func (c *Compose) SetTransformLogWriter(w io.Writer) {
 	c.logOut = w
 }
 
+func (c *Compose) SetTemplateVars(vars map[string]string) {
+	if len(vars) == 0 {
+		c.tplVars = nil
+		return
+	}
+
+	cloned := make(map[string]string, len(vars))
+	for k, v := range vars {
+		cloned[k] = v
+	}
+	c.tplVars = cloned
+}
+
+func (c *Compose) SetLayerDir(layerDir string) {
+	c.LayerDir = layerDir
+}
+
 func (c *Compose) Run() (string, error) {
 	for _, layer := range c.Layers {
 		if err := validateLayerName(layer); err != nil {
@@ -83,21 +103,32 @@ func (c *Compose) Run() (string, error) {
 		return "", fmt.Errorf("failed to parse base compose file: %s", err)
 	}
 
-	for _, layer := range c.Layers {
-		in, err := c.fs.ReadFile(fmt.Sprintf("%s.d/%s", c.Base, layer))
+	layerDir := c.LayerDir
+	if layerDir == "" {
+		layerDir = c.Base + ".d"
+	}
+
+	for i, layer := range c.Layers {
+		layerPath := filepath.Join(layerDir, layer)
+		in, err := c.fs.ReadFile(layerPath)
 		if err != nil {
-			return "", fmt.Errorf("failed to read layer compose file: %s", err)
+			return "", fmt.Errorf("failed to read layer compose file %q: %s", layerPath, err)
+		}
+
+		in, err = c.renderLayerTemplate(in, layer)
+		if err != nil {
+			return "", err
 		}
 
 		l, operators, err := parseLayer(in)
 		if err != nil {
-			return "", fmt.Errorf("failed to parse layer compose file: %s", err)
+			return "", fmt.Errorf("failed to parse layer compose file %q: %s", layerPath, err)
 		}
 
-		for _, operator := range operators {
+		for opIndex, operator := range operators {
 			l, b, err = c.applyLayerOperator(l, operator, b)
 			if err != nil {
-				return "", fmt.Errorf("failed to apply layer operator for %q: %w", layer, err)
+				return "", fmt.Errorf("failed to apply layer operator operators[%d] (kind=%q) in layer[%d] %q: %w", opIndex, operator.kind, i, layer, err)
 			}
 		}
 	}
@@ -127,4 +158,22 @@ func (c *Compose) readSourceYAML(rawPath string) (any, error) {
 	}
 
 	return out, nil
+}
+
+func (c *Compose) renderLayerTemplate(raw []byte, layer string) ([]byte, error) {
+	if len(c.tplVars) == 0 {
+		return raw, nil
+	}
+
+	tpl, err := template.New(layer).Option("missingkey=error").Parse(string(raw))
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse layer template for %q: %w", layer, err)
+	}
+
+	var out bytes.Buffer
+	if err := tpl.Execute(&out, c.tplVars); err != nil {
+		return nil, fmt.Errorf("failed to render layer template for %q: %w", layer, err)
+	}
+
+	return out.Bytes(), nil
 }

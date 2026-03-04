@@ -14,7 +14,8 @@ import (
 )
 
 type fakeComposer struct {
-	run func() (string, error)
+	run             func() (string, error)
+	setTemplateVars func(map[string]string)
 }
 
 type errorWriter struct{}
@@ -28,6 +29,14 @@ func (f fakeComposer) Run() (string, error) {
 }
 
 func (f fakeComposer) SetTransformLogWriter(io.Writer) {}
+
+func (f fakeComposer) SetTemplateVars(vars map[string]string) {
+	if f.setTemplateVars != nil {
+		f.setTemplateVars(vars)
+	}
+}
+
+func (f fakeComposer) SetLayerDir(string) {}
 
 func setupComposeFiles(t *testing.T, fs afero.Fs) string {
 	t.Helper()
@@ -114,6 +123,50 @@ func TestRootCmdRunsOnlySpecifiedLayer(t *testing.T) {
 	content := string(b)
 	require.Contains(content, "service: first")
 	require.NotContains(content, "service: second")
+}
+
+func TestRootCmdSupportsBaseAndLayerDirFlags(t *testing.T) {
+	require := require.New(t)
+	fs := afero.NewMemMapFs()
+
+	err := afero.WriteFile(fs, "/base.yaml", []byte("service: base\n"), 0644)
+	require.NoError(err)
+	err = fs.MkdirAll("/layers", 0755)
+	require.NoError(err)
+	err = afero.WriteFile(fs, "/layers/1-layer.yaml", []byte("service: from-layer-dir\n"), 0644)
+	require.NoError(err)
+
+	cmd := newTestRootCmd(fs, io.Discard, nil)
+	cmd.SetArgs([]string{"--base", "/base.yaml", "--layer-dir", "/layers", "-o", "/out.yaml"})
+	err = cmd.Execute()
+	require.NoError(err)
+
+	b, err := afero.ReadFile(fs, "/out.yaml")
+	require.NoError(err)
+	require.Contains(string(b), "service: from-layer-dir")
+}
+
+func TestRootCmdFailsWhenBaseArgAndBaseFlagBothProvided(t *testing.T) {
+	require := require.New(t)
+	fs := afero.NewMemMapFs()
+	base := setupComposeFiles(t, fs)
+
+	cmd := newTestRootCmd(fs, io.Discard, nil)
+	cmd.SetArgs([]string{base, "--base", base})
+	err := cmd.Execute()
+	require.Error(err)
+	require.Contains(err.Error(), "either as argument or --base")
+}
+
+func TestRootCmdFailsWhenBaseNotProvided(t *testing.T) {
+	require := require.New(t)
+	fs := afero.NewMemMapFs()
+
+	cmd := newTestRootCmd(fs, io.Discard, nil)
+	cmd.SetArgs([]string{"--layer-dir", "/layers"})
+	err := cmd.Execute()
+	require.Error(err)
+	require.Contains(err.Error(), "base path is required")
 }
 
 func TestRootCmdFailsWhenSpecifiedLayerMissing(t *testing.T) {
@@ -254,6 +307,44 @@ func TestRootCmdFailsWhenComposeFails(t *testing.T) {
 	require.Error(err)
 	require.Contains(err.Error(), "compose files")
 	require.Contains(err.Error(), "compose failed")
+}
+
+func TestRootCmdPassesTemplateVarsToCompose(t *testing.T) {
+	require := require.New(t)
+	fs := afero.NewMemMapFs()
+	base := setupComposeFiles(t, fs)
+
+	var captured map[string]string
+	cmd := newTestRootCmd(fs, io.Discard, func(deps *commandDeps) {
+		deps.newCompose = func(string, []string, afero.Fs) composeRunner {
+			return fakeComposer{
+				run: func() (string, error) {
+					return "service: ok\n", nil
+				},
+				setTemplateVars: func(vars map[string]string) {
+					captured = vars
+				},
+			}
+		}
+	})
+
+	cmd.SetArgs([]string{base, "--var", "URL=https://api.example.com", "--var", "ENV=prod"})
+	err := cmd.Execute()
+	require.NoError(err)
+	require.Equal("https://api.example.com", captured["URL"])
+	require.Equal("prod", captured["ENV"])
+}
+
+func TestRootCmdFailsForInvalidVarFormat(t *testing.T) {
+	require := require.New(t)
+	fs := afero.NewMemMapFs()
+	base := setupComposeFiles(t, fs)
+
+	cmd := newTestRootCmd(fs, io.Discard, nil)
+	cmd.SetArgs([]string{base, "--var", "BAD"})
+	err := cmd.Execute()
+	require.Error(err)
+	require.Contains(err.Error(), "invalid --var")
 }
 
 func TestRootCmdFailsWhenCreateOutputDirectoryFails(t *testing.T) {

@@ -79,10 +79,15 @@ app:
 yaml-compose base.yaml
 yaml-compose base.yaml -o out.yaml
 yaml-compose base.yaml --layer 2-debug.yaml
+yaml-compose --base ./config/base.yaml --layer-dir ./config/layers
+yaml-compose base.yaml --var URL=https://api.example.com --var ENV=prod
 ```
 
+- `--base`：base yaml 文件路径（可替代位置参数）。
+- `--layer-dir`：layer yaml 目录路径（默认 `<base>.d`）。
 - `-o, --output`：将合成结果写入文件。
 - `--layer`：只执行单个 layer 文件（便于排查某一层）。
+- `--var`：注入 layer 模板变量（`KEY=VALUE`，可重复）。
 
 ## 合并规则速览
 

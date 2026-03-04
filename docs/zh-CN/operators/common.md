@@ -42,10 +42,28 @@ target:
       list: override|append|prepend
 ```
 
-- `list_filter`、`list_extract`、`replace_values` 会使用
+- `list_filter`、`list_extract`、`list_remove`、`replace_values` 会使用
 - 列表算子未设置时默认等于 `source.path`
 - `target.merge.defaults.list` 仅 `list_filter` 和 `list_extract` 支持，默认 `override`
 - `target.merge` 仅支持 `defaults.list`
+- `target.ignore_not_found` 仅 `list_extract` 支持，默认 `false`
+
+## Layer 模板变量
+
+可通过命令行注入变量，并在 layer 文件中渲染：
+
+```bash
+yaml-compose base.yaml --var URL=https://api.example.com --var ENV=prod
+```
+
+```yaml
+app:
+  url: "{{.URL}}"
+```
+
+- 仅对 layer 文件进行模板渲染
+- base 文件和 `source.from=file` 读取的文件不会渲染模板
+- 模板缺少变量时会报错
 
 ## 路径语法
 
