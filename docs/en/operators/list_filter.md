@@ -17,6 +17,9 @@
     path: app.backends
   target:
     path: app.backends
+    merge:
+      defaults:
+        list: override|append|prepend
   list_filter:
     match_path: name
     include: ["prod-"]
@@ -27,6 +30,7 @@
 - Input list can be `[]string` or `[]object`
 - For `[]object`, `match_path` is required and must resolve to a string
 - `include_mode` default is `any`
+- `target.merge.defaults.list` default is `override`
 
 ## Example
 

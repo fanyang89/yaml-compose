@@ -37,10 +37,15 @@ source:
 ```yaml
 target:
   path: app.backends
+  merge:
+    defaults:
+      list: override|append|prepend
 ```
 
 - Used by `list_filter`, `list_extract`, and `replace_values`
 - If omitted on list operators, defaults to `source.path`
+- `target.merge.defaults.list` is supported by `list_filter` and `list_extract` only, default `override`
+- `target.merge` supports `defaults.list` only
 
 ## Path Syntax
 

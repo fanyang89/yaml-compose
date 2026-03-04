@@ -597,6 +597,84 @@ inventory:
 	require.Equal([]any{"prod-a"}, inventory["backends"])
 }
 
+func TestComposeTransformListFilterAppendsToTargetPath(t *testing.T) {
+	require := require.New(t)
+
+	c := compose.NewMock("base.yaml", []string{"1-layer.yaml"})
+	fs := c.GetFilesystem()
+
+	base := `app:
+  backends: [base]
+`
+	layer := `operators:
+  - kind: list_filter
+    source:
+      file: source.yaml
+      path: inventory.backends
+    target:
+      path: app.backends
+      merge:
+        defaults:
+          list: append
+    list_filter:
+      include: ["prod-"]
+---
+app: {}
+`
+	source := `inventory:
+  backends: [prod-a, dev-a]
+`
+	baseDir := writeBaseFile(t, fs, "base.yaml", base)
+	writeLayerFile(t, fs, baseDir, "1-layer.yaml", layer)
+	writeFile(t, fs, "source.yaml", source)
+
+	out, err := c.Run()
+	require.NoError(err)
+
+	var got map[string]any
+	err = yaml.Unmarshal([]byte(out), &got)
+	require.NoError(err)
+
+	app := got["app"].(map[string]any)
+	require.Equal([]any{"base", "prod-a"}, app["backends"])
+}
+
+func TestComposeTransformListFilterReturnsErrorWhenAppendingToNonListTarget(t *testing.T) {
+	require := require.New(t)
+
+	c := compose.NewMock("base.yaml", []string{"1-layer.yaml"})
+	fs := c.GetFilesystem()
+
+	base := `app:
+  backends: base
+`
+	layer := `operators:
+  - kind: list_filter
+    source:
+      file: source.yaml
+      path: inventory.backends
+    target:
+      path: app.backends
+      merge:
+        defaults:
+          list: append
+    list_filter:
+      include: ["prod-"]
+---
+app: {}
+`
+	source := `inventory:
+  backends: [prod-a]
+`
+	baseDir := writeBaseFile(t, fs, "base.yaml", base)
+	writeLayerFile(t, fs, baseDir, "1-layer.yaml", layer)
+	writeFile(t, fs, "source.yaml", source)
+
+	_, err := c.Run()
+	require.Error(err)
+	require.Contains(err.Error(), `target path "app.backends" must resolve to a list when target.merge.defaults.list="append"`)
+}
+
 func TestComposeTransformListFilterReturnsErrorWhenObjectMatchPathMissing(t *testing.T) {
 	require := require.New(t)
 
@@ -1032,6 +1110,232 @@ groups:
 	second := groups[1].(map[string]any)
 	require.Equal([]any{"p1", "p2"}, first["ports"])
 	require.Equal([]any{}, second["ports"])
+}
+
+func TestComposeTransformListExtractPrependsToTargetPath(t *testing.T) {
+	require := require.New(t)
+
+	c := compose.NewMock("base.yaml", []string{"1-layer.yaml"})
+	fs := c.GetFilesystem()
+
+	base := `app:
+  backend-names: [base]
+`
+	layer := `operators:
+  - kind: list_extract
+    source:
+      file: source.yaml
+      path: inventory.backends
+    target:
+      path: app.backend-names
+      merge:
+        defaults:
+          list: prepend
+    list_extract:
+      extract_path: name
+      include: ["prod-"]
+---
+app: {}
+`
+	source := `inventory:
+  backends:
+    - name: prod-a
+    - name: dev-a
+`
+	baseDir := writeBaseFile(t, fs, "base.yaml", base)
+	writeLayerFile(t, fs, baseDir, "1-layer.yaml", layer)
+	writeFile(t, fs, "source.yaml", source)
+
+	out, err := c.Run()
+	require.NoError(err)
+
+	var got map[string]any
+	err = yaml.Unmarshal([]byte(out), &got)
+	require.NoError(err)
+
+	app := got["app"].(map[string]any)
+	require.Equal([]any{"prod-a", "base"}, app["backend-names"])
+}
+
+func TestComposeTransformListTargetReturnsErrorForInvalidListStrategy(t *testing.T) {
+	require := require.New(t)
+
+	c := compose.NewMock("base.yaml", []string{"1-layer.yaml"})
+	fs := c.GetFilesystem()
+
+	base := `app:
+  backend-names: []
+`
+	layer := `operators:
+  - kind: list_extract
+    source:
+      file: source.yaml
+      path: inventory.backends
+    target:
+      path: app.backend-names
+      merge:
+        defaults:
+          list: invalid
+    list_extract:
+      extract_path: name
+---
+app: {}
+`
+	source := `inventory:
+  backends:
+    - name: prod-a
+`
+	baseDir := writeBaseFile(t, fs, "base.yaml", base)
+	writeLayerFile(t, fs, baseDir, "1-layer.yaml", layer)
+	writeFile(t, fs, "source.yaml", source)
+
+	_, err := c.Run()
+	require.Error(err)
+	require.Contains(err.Error(), `invalid operators[0].target.merge: invalid merge.defaults: unsupported list strategy`)
+}
+
+func TestComposeTransformReplaceValuesReturnsErrorWhenTargetMergeConfigured(t *testing.T) {
+	require := require.New(t)
+
+	c := compose.NewMock("base.yaml", []string{"1-layer.yaml"})
+	fs := c.GetFilesystem()
+
+	base := `app:
+  labels: []
+`
+	layer := `operators:
+  - kind: replace_values
+    source:
+      from: state
+      path: app.labels
+    target:
+      path: app.labels
+      merge:
+        defaults:
+          list: append
+    replace_values:
+      old: base
+      new: prod
+---
+app:
+  labels: []
+`
+	baseDir := writeBaseFile(t, fs, "base.yaml", base)
+	writeLayerFile(t, fs, baseDir, "1-layer.yaml", layer)
+
+	_, err := c.Run()
+	require.Error(err)
+	require.Contains(err.Error(), "only list_filter and list_extract support target.merge")
+}
+
+func TestComposeTransformListFilterReturnsErrorWhenTargetMergeHasPaths(t *testing.T) {
+	require := require.New(t)
+
+	c := compose.NewMock("base.yaml", []string{"1-layer.yaml"})
+	fs := c.GetFilesystem()
+
+	base := `app:
+  backends: []
+`
+	layer := `operators:
+  - kind: list_filter
+    source:
+      file: source.yaml
+      path: inventory.backends
+    target:
+      path: app.backends
+      merge:
+        paths:
+          app.backends:
+            list: append
+    list_filter:
+      include: ["prod-"]
+---
+app:
+  backends: []
+`
+	source := `inventory:
+  backends: [prod-a]
+`
+	baseDir := writeBaseFile(t, fs, "base.yaml", base)
+	writeLayerFile(t, fs, baseDir, "1-layer.yaml", layer)
+	writeFile(t, fs, "source.yaml", source)
+
+	_, err := c.Run()
+	require.Error(err)
+	require.Contains(err.Error(), "target.merge only supports defaults.list")
+}
+
+func TestComposeTransformListFilterReturnsErrorWhenTargetMergeSetsMapStrategy(t *testing.T) {
+	require := require.New(t)
+
+	c := compose.NewMock("base.yaml", []string{"1-layer.yaml"})
+	fs := c.GetFilesystem()
+
+	base := `app:
+  backends: []
+`
+	layer := `operators:
+  - kind: list_filter
+    source:
+      file: source.yaml
+      path: inventory.backends
+    target:
+      path: app.backends
+      merge:
+        defaults:
+          map: override
+    list_filter:
+      include: ["prod-"]
+---
+app:
+  backends: []
+`
+	source := `inventory:
+  backends: [prod-a]
+`
+	baseDir := writeBaseFile(t, fs, "base.yaml", base)
+	writeLayerFile(t, fs, baseDir, "1-layer.yaml", layer)
+	writeFile(t, fs, "source.yaml", source)
+
+	_, err := c.Run()
+	require.Error(err)
+	require.Contains(err.Error(), "target.merge only supports defaults.list")
+}
+
+func TestComposeTransformListFilterReturnsErrorForLegacyTargetList(t *testing.T) {
+	require := require.New(t)
+
+	c := compose.NewMock("base.yaml", []string{"1-layer.yaml"})
+	fs := c.GetFilesystem()
+
+	base := `app:
+  backends: []
+`
+	layer := `operators:
+  - kind: list_filter
+    source:
+      file: source.yaml
+      path: inventory.backends
+    target:
+      path: app.backends
+      list: append
+    list_filter:
+      include: ["prod-"]
+---
+app:
+  backends: []
+`
+	source := `inventory:
+  backends: [prod-a]
+`
+	baseDir := writeBaseFile(t, fs, "base.yaml", base)
+	writeLayerFile(t, fs, baseDir, "1-layer.yaml", layer)
+	writeFile(t, fs, "source.yaml", source)
+
+	_, err := c.Run()
+	require.Error(err)
+	require.Contains(err.Error(), "use operators[0].target.merge.defaults.list instead")
 }
 
 func TestComposeTransformSelectorTargetReturnsErrorWhenNotUnique(t *testing.T) {

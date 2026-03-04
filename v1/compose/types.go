@@ -78,7 +78,9 @@ type layerTransformSource struct {
 }
 
 type layerTransformTarget struct {
-	Path string `yaml:"path"`
+	Path  string        `yaml:"path"`
+	Merge mergeMetadata `yaml:"merge"`
+	List  string        `yaml:"list"`
 }
 
 type layerListFilterMetadata struct {
@@ -109,6 +111,7 @@ type layerTransform struct {
 	sourcePath    []string
 	hasSourcePath bool
 	targetPath    []string
+	targetMerge   layerMergeStrategy
 	listFilter    layerListFilter
 	listExtract   layerListExtract
 	replaceVals   layerReplaceValues

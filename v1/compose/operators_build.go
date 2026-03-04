@@ -18,6 +18,11 @@ const (
 	sourcePathRequired
 )
 
+type parsedOperatorTarget struct {
+	path  []string
+	merge layerMergeStrategy
+}
+
 func buildLayerOperator(meta layerOperatorMetadata, fieldPrefix string) (layerTransform, error) {
 	if meta.Kind == "" {
 		return layerTransform{}, fmt.Errorf("invalid %s.kind %q: cannot be empty", fieldPrefix, meta.Kind)
@@ -75,7 +80,12 @@ func buildLayerTransform(meta layerTransformMetadata, fieldPrefix string) (layer
 		return layerTransform{}, err
 	}
 
-	targetPath, err := parseTargetPath(meta.Target.Path, meta.Source.Path, fieldPrefix)
+	target, err := parseOperatorTarget(
+		meta.Target,
+		meta.Source.Path,
+		fieldPrefix,
+		meta.Kind == transformKindListFilter || meta.Kind == transformKindListExtract,
+	)
 	if err != nil {
 		return layerTransform{}, err
 	}
@@ -86,7 +96,8 @@ func buildLayerTransform(meta layerTransformMetadata, fieldPrefix string) (layer
 		sourceFile:    source.file,
 		sourcePath:    source.path,
 		hasSourcePath: source.hasPath,
-		targetPath:    targetPath,
+		targetPath:    target.path,
+		targetMerge:   target.merge,
 	}
 
 	switch meta.Kind {
@@ -210,17 +221,49 @@ func parseOptionalPath(rawPath string, fieldName string) ([]string, error) {
 	return path, nil
 }
 
-func parseTargetPath(targetPathRaw string, sourcePathRaw string, fieldPrefix string) ([]string, error) {
+func parseOperatorTarget(meta layerTransformTarget, sourcePathRaw string, fieldPrefix string, supportsListStrategy bool) (parsedOperatorTarget, error) {
+	hasLegacyList := meta.List != ""
+	hasMerge := meta.Merge.Defaults.Map != "" || meta.Merge.Defaults.List != "" || len(meta.Merge.Paths) > 0
+
+	if hasLegacyList && hasMerge {
+		return parsedOperatorTarget{}, fmt.Errorf("invalid %s.target: target.list and target.merge cannot be used together", fieldPrefix)
+	}
+
+	if hasLegacyList {
+		return parsedOperatorTarget{}, fmt.Errorf("invalid %s.target.list: use %s.target.merge.defaults.list instead", fieldPrefix, fieldPrefix)
+	}
+
+	if !supportsListStrategy && hasMerge {
+		return parsedOperatorTarget{}, fmt.Errorf("invalid %s.target.merge: only list_filter and list_extract support target.merge", fieldPrefix)
+	}
+
+	targetMerge := layerMergeStrategy{defaults: defaultMergeStrategy}
+	if hasMerge {
+		if meta.Merge.Defaults.Map != "" {
+			return parsedOperatorTarget{}, fmt.Errorf("invalid %s.target.merge.defaults.map: target.merge only supports defaults.list", fieldPrefix)
+		}
+		if len(meta.Merge.Paths) > 0 {
+			return parsedOperatorTarget{}, fmt.Errorf("invalid %s.target.merge.paths: target.merge only supports defaults.list", fieldPrefix)
+		}
+
+		strategy, err := buildLayerMergeStrategy(meta.Merge)
+		if err != nil {
+			return parsedOperatorTarget{}, fmt.Errorf("invalid %s.target.merge: %w", fieldPrefix, err)
+		}
+		targetMerge = strategy
+	}
+
+	targetPathRaw := meta.Path
 	if targetPathRaw == "" {
 		targetPathRaw = sourcePathRaw
 	}
 
 	targetPath, err := splitDotPath(targetPathRaw)
 	if err != nil {
-		return nil, fmt.Errorf("invalid %s.target.path %q: %w", fieldPrefix, targetPathRaw, err)
+		return parsedOperatorTarget{}, fmt.Errorf("invalid %s.target.path %q: %w", fieldPrefix, targetPathRaw, err)
 	}
 
-	return targetPath, nil
+	return parsedOperatorTarget{path: targetPath, merge: targetMerge}, nil
 }
 
 func compileRegexList(raw []string, fieldName string) ([]*regexp.Regexp, error) {

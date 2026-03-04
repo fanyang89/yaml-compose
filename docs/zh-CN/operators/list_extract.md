@@ -17,6 +17,9 @@
     path: inventory.backends
   target:
     path: app.backend_names
+    merge:
+      defaults:
+        list: override|append|prepend
   list_extract:
     extract_path: meta.name
     include: ["prod-"]
@@ -28,6 +31,7 @@
 - `extract_path` 必填
 - 提取值必须是字符串
 - `include_mode` 默认值为 `any`
+- `target.merge.defaults.list` 默认值为 `override`
 
 ## 示例
 

@@ -37,10 +37,15 @@ source:
 ```yaml
 target:
   path: app.backends
+  merge:
+    defaults:
+      list: override|append|prepend
 ```
 
 - `list_filter`、`list_extract`、`replace_values` 会使用
 - 列表算子未设置时默认等于 `source.path`
+- `target.merge.defaults.list` 仅 `list_filter` 和 `list_extract` 支持，默认 `override`
+- `target.merge` 仅支持 `defaults.list`
 
 ## 路径语法
 

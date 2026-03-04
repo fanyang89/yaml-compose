@@ -17,6 +17,9 @@
     path: app.backends
   target:
     path: app.backends
+    merge:
+      defaults:
+        list: override|append|prepend
   list_filter:
     match_path: name
     include: ["prod-"]
@@ -27,6 +30,7 @@
 - 输入列表支持 `[]string` 与 `[]object`
 - `[]object` 必须设置 `match_path`，且该路径值必须是字符串
 - `include_mode` 默认值为 `any`
+- `target.merge.defaults.list` 默认值为 `override`
 
 ## 示例
 
