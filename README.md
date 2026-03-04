@@ -1,7 +1,7 @@
 # yaml-compose
 
 [![CI](https://github.com/fanyang89/yaml-compose/actions/workflows/ci.yml/badge.svg)](https://github.com/fanyang89/yaml-compose/actions/workflows/ci.yml)
-[![Coverage](https://img.shields.io/badge/Coverage-0.0%25-red)](https://github.com/fanyang89/yaml-compose/actions/workflows/coverage.yml)
+![Coverage](https://img.shields.io/badge/Coverage-83.4%25-brightgreen)
 
 `yaml-compose` merges one base YAML file with ordered layer files.
 
