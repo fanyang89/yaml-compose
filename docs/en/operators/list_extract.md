@@ -17,6 +17,9 @@
     path: inventory.backends
   target:
     path: app.backend_names
+    merge:
+      defaults:
+        list: override|append|prepend
   list_extract:
     extract_path: meta.name
     include: ["prod-"]
@@ -28,6 +31,7 @@
 - `extract_path` is required
 - Extracted value must be string
 - `include_mode` default is `any`
+- `target.merge.defaults.list` default is `override`
 
 ## Example
 

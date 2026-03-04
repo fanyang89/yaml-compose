@@ -31,11 +31,43 @@ func (c *Compose) applyLayerOperator(layer map[string]any, operator layerTransfo
 		return layer, state, nil
 	}
 
-	if err := setMapValueAtPath(layer, operator.targetPath, result.output); err != nil {
+	output, err := resolveTargetOutput(operator, layer, state, result.output)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	if err := setMapValueAtPath(layer, operator.targetPath, output); err != nil {
 		return nil, nil, err
 	}
 
 	return layer, state, nil
+}
+
+func resolveTargetOutput(operator layerTransform, layer map[string]any, state map[string]any, output any) (any, error) {
+	targetListStrategy := operator.targetMerge.defaults.List
+	if targetListStrategy == "" || targetListStrategy == listMergeOverride {
+		return output, nil
+	}
+
+	outputList, ok := output.([]any)
+	if !ok {
+		return nil, fmt.Errorf("target.merge.defaults.list %q requires list output, got %T", targetListStrategy, output)
+	}
+
+	existing, found := getValueAtPath(layer, operator.targetPath)
+	if !found {
+		existing, found = getValueAtPath(state, operator.targetPath)
+	}
+	if !found {
+		return outputList, nil
+	}
+
+	existingList, ok := existing.([]any)
+	if !ok {
+		return nil, fmt.Errorf("target path %q must resolve to a list when target.merge.defaults.list=%q", normalizePath(operator.targetPath), targetListStrategy)
+	}
+
+	return mergeValue(existingList, outputList, operator.targetMerge, operator.targetPath), nil
 }
 
 func (c *Compose) resolveOperatorInput(operator layerTransform, layer map[string]any, state map[string]any) (any, error) {
