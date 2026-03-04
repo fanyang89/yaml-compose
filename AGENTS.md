@@ -87,7 +87,7 @@ Guidance for coding agents working in this repository.
 - Prefer concrete structs for domain behavior (`Compose`, strategy structs)
 - Use small interfaces for dependency seams (example: `composeRunner` in `cmd`)
 - Keep unexported helpers unexported unless cross-package use is needed
-- Use `map[string]interface{}` when interacting with dynamic YAML nodes
+- Use `map[string]any` when interacting with dynamic YAML nodes
 
 ### Naming
 

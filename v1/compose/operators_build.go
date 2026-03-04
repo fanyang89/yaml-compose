@@ -1,0 +1,284 @@
+package compose
+
+import (
+	"fmt"
+	"regexp"
+)
+
+type regexFilterConfig struct {
+	include     []*regexp.Regexp
+	exclude     []*regexp.Regexp
+	includeMode includeMode
+}
+
+type sourcePathRequirement int
+
+const (
+	sourcePathOptional sourcePathRequirement = iota
+	sourcePathRequired
+)
+
+func buildLayerOperator(meta layerOperatorMetadata, fieldPrefix string) (layerTransform, error) {
+	if meta.Kind == "" {
+		return layerTransform{}, fmt.Errorf("invalid %s.kind %q: cannot be empty", fieldPrefix, meta.Kind)
+	}
+
+	if meta.Kind == transformKindMerge {
+		mergeOp, err := buildMergeOperator(meta, fieldPrefix)
+		if err != nil {
+			return layerTransform{}, err
+		}
+		return mergeOp, nil
+	}
+
+	transformMeta := layerTransformMetadata{
+		Kind:        meta.Kind,
+		Source:      meta.Source,
+		Target:      meta.Target,
+		ListFilter:  meta.ListFilter,
+		ListExtract: meta.ListExtract,
+		ReplaceVals: meta.ReplaceVals,
+	}
+	return buildLayerTransform(transformMeta, fieldPrefix)
+}
+
+func buildMergeOperator(meta layerOperatorMetadata, fieldPrefix string) (layerTransform, error) {
+	source, err := parseOperatorSource(meta.Source, fieldPrefix, transformSourceLayer, sourcePathOptional)
+	if err != nil {
+		return layerTransform{}, err
+	}
+
+	strategy, err := buildLayerMergeStrategy(meta.Merge)
+	if err != nil {
+		return layerTransform{}, fmt.Errorf("invalid %s.merge: %w", fieldPrefix, err)
+	}
+
+	op := layerTransform{
+		kind:          transformKindMerge,
+		sourceFrom:    source.from,
+		sourceFile:    source.file,
+		merge:         strategy,
+		sourcePath:    source.path,
+		hasSourcePath: source.hasPath,
+	}
+
+	return op, nil
+}
+
+func buildLayerTransform(meta layerTransformMetadata, fieldPrefix string) (layerTransform, error) {
+	if meta.Kind != transformKindListFilter && meta.Kind != transformKindListExtract && meta.Kind != transformKindReplaceVals {
+		return layerTransform{}, fmt.Errorf("invalid %s.kind %q: supported values: list_filter, list_extract, replace_values", fieldPrefix, meta.Kind)
+	}
+
+	source, err := parseOperatorSource(meta.Source, fieldPrefix, transformSourceFile, sourcePathRequired)
+	if err != nil {
+		return layerTransform{}, err
+	}
+
+	targetPath, err := parseTargetPath(meta.Target.Path, meta.Source.Path, fieldPrefix)
+	if err != nil {
+		return layerTransform{}, err
+	}
+
+	transform := layerTransform{
+		kind:          meta.Kind,
+		sourceFrom:    source.from,
+		sourceFile:    source.file,
+		sourcePath:    source.path,
+		hasSourcePath: source.hasPath,
+		targetPath:    targetPath,
+	}
+
+	switch meta.Kind {
+	case transformKindListFilter:
+		filter, err := buildListFilter(meta.ListFilter, fieldPrefix)
+		if err != nil {
+			return layerTransform{}, err
+		}
+		transform.listFilter = filter
+	case transformKindListExtract:
+		extract, err := buildListExtract(meta.ListExtract, fieldPrefix)
+		if err != nil {
+			return layerTransform{}, err
+		}
+		transform.listExtract = extract
+	case transformKindReplaceVals:
+		replaceVals, err := buildReplaceValues(meta.ReplaceVals, fieldPrefix)
+		if err != nil {
+			return layerTransform{}, err
+		}
+		transform.replaceVals = replaceVals
+	}
+
+	return transform, nil
+}
+
+func buildReplaceValues(meta layerReplaceValuesMetadata, fieldPrefix string) (layerReplaceValues, error) {
+	if meta.Old == "" {
+		return layerReplaceValues{}, fmt.Errorf("invalid %s.replace_values.old: cannot be empty", fieldPrefix)
+	}
+
+	return layerReplaceValues{
+		old:           meta.Old,
+		new:           meta.New,
+		recursive:     meta.Recursive,
+		printOriginal: meta.PrintOriginal,
+	}, nil
+}
+
+func buildListExtract(meta layerListExtractMetadata, fieldPrefix string) (layerListExtract, error) {
+	extractPath, err := splitDotPath(meta.ExtractPath)
+	if err != nil {
+		return layerListExtract{}, fmt.Errorf("invalid %s.list_extract.extract_path %q: %w", fieldPrefix, meta.ExtractPath, err)
+	}
+
+	filterConfig, err := parseRegexFilterConfig(
+		meta.Include,
+		meta.Exclude,
+		meta.IncludeMode,
+		fmt.Sprintf("%s.list_extract", fieldPrefix),
+	)
+	if err != nil {
+		return layerListExtract{}, err
+	}
+
+	return layerListExtract{
+		extractPath: extractPath,
+		include:     filterConfig.include,
+		exclude:     filterConfig.exclude,
+		includeMode: filterConfig.includeMode,
+	}, nil
+}
+
+func buildListFilter(meta layerListFilterMetadata, fieldPrefix string) (layerListFilter, error) {
+	filterConfig, err := parseRegexFilterConfig(
+		meta.Include,
+		meta.Exclude,
+		meta.IncludeMode,
+		fmt.Sprintf("%s.list_filter", fieldPrefix),
+	)
+	if err != nil {
+		return layerListFilter{}, err
+	}
+
+	matchPath, err := parseOptionalPath(meta.MatchPath, fmt.Sprintf("%s.list_filter.match_path", fieldPrefix))
+	if err != nil {
+		return layerListFilter{}, err
+	}
+
+	return layerListFilter{
+		matchPath:   matchPath,
+		include:     filterConfig.include,
+		exclude:     filterConfig.exclude,
+		includeMode: filterConfig.includeMode,
+	}, nil
+}
+
+func parseRegexFilterConfig(include []string, exclude []string, includeModeRaw string, fieldPrefix string) (regexFilterConfig, error) {
+	includeRegex, err := compileRegexList(include, fmt.Sprintf("%s.include", fieldPrefix))
+	if err != nil {
+		return regexFilterConfig{}, err
+	}
+
+	excludeRegex, err := compileRegexList(exclude, fmt.Sprintf("%s.exclude", fieldPrefix))
+	if err != nil {
+		return regexFilterConfig{}, err
+	}
+
+	mode, err := parseIncludeMode(includeModeRaw, fmt.Sprintf("%s.include_mode", fieldPrefix))
+	if err != nil {
+		return regexFilterConfig{}, err
+	}
+
+	return regexFilterConfig{
+		include:     includeRegex,
+		exclude:     excludeRegex,
+		includeMode: mode,
+	}, nil
+}
+
+func parseOptionalPath(rawPath string, fieldName string) ([]string, error) {
+	if rawPath == "" {
+		return nil, nil
+	}
+
+	path, err := splitDotPath(rawPath)
+	if err != nil {
+		return nil, fmt.Errorf("invalid %s %q: %w", fieldName, rawPath, err)
+	}
+
+	return path, nil
+}
+
+func parseTargetPath(targetPathRaw string, sourcePathRaw string, fieldPrefix string) ([]string, error) {
+	if targetPathRaw == "" {
+		targetPathRaw = sourcePathRaw
+	}
+
+	targetPath, err := splitDotPath(targetPathRaw)
+	if err != nil {
+		return nil, fmt.Errorf("invalid %s.target.path %q: %w", fieldPrefix, targetPathRaw, err)
+	}
+
+	return targetPath, nil
+}
+
+func compileRegexList(raw []string, fieldName string) ([]*regexp.Regexp, error) {
+	out := make([]*regexp.Regexp, 0, len(raw))
+	for i, expr := range raw {
+		re, err := regexp.Compile(expr)
+		if err != nil {
+			return nil, fmt.Errorf("invalid %s[%d] %q: %w", fieldName, i, expr, err)
+		}
+		out = append(out, re)
+	}
+	return out, nil
+}
+
+func parseOperatorSource(meta layerTransformSource, fieldPrefix string, defaultFrom string, pathRequirement sourcePathRequirement) (parsedOperatorSource, error) {
+	from := meta.From
+	if from == "" {
+		from = defaultFrom
+	}
+	if from != transformSourceFile && from != transformSourceState && from != transformSourceLayer {
+		return parsedOperatorSource{}, fmt.Errorf("invalid %s.source.from %q: supported values: file, state, layer", fieldPrefix, meta.From)
+	}
+	if from == transformSourceFile && meta.File == "" {
+		return parsedOperatorSource{}, fmt.Errorf("invalid %s.source.file: cannot be empty when source.from=file", fieldPrefix)
+	}
+	if from != transformSourceFile && meta.File != "" {
+		return parsedOperatorSource{}, fmt.Errorf("invalid %s.source.file: must be empty when source.from is not file", fieldPrefix)
+	}
+
+	if pathRequirement == sourcePathRequired && meta.Path == "" {
+		return parsedOperatorSource{}, fmt.Errorf("invalid %s.source.path %q: path cannot be empty", fieldPrefix, meta.Path)
+	}
+	if meta.Path == "" {
+		return parsedOperatorSource{from: from, file: meta.File}, nil
+	}
+
+	path, err := splitDotPath(meta.Path)
+	if err != nil {
+		return parsedOperatorSource{}, fmt.Errorf("invalid %s.source.path %q: %w", fieldPrefix, meta.Path, err)
+	}
+
+	return parsedOperatorSource{
+		from:    from,
+		file:    meta.File,
+		path:    path,
+		hasPath: true,
+	}, nil
+}
+
+func parseIncludeMode(raw string, fieldName string) (includeMode, error) {
+	if raw == "" {
+		return includeModeAny, nil
+	}
+
+	mode := includeMode(raw)
+	if mode != includeModeAny && mode != includeModeAll {
+		return "", fmt.Errorf("invalid %s %q: supported values: any, all", fieldName, raw)
+	}
+
+	return mode, nil
+}

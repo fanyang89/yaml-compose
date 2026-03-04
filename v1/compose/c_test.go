@@ -139,11 +139,11 @@ func TestCompose(t *testing.T) {
 	r, err := c.Run()
 	require.NoError(err)
 
-	var got map[string]interface{}
+	var got map[string]any
 	err = yaml.Unmarshal([]byte(r), &got)
 	require.NoError(err)
 	require.Equal(false, got["xmas"])
-	require.Equal([]interface{}{4, 5, 6}, got["french-hens"])
+	require.Equal([]any{4, 5, 6}, got["french-hens"])
 	require.Equal("a drop of golden sun", got["ray"])
 }
 
@@ -174,15 +174,15 @@ feature: null
 	out, err := c.Run()
 	require.NoError(err)
 
-	var got map[string]interface{}
+	var got map[string]any
 	err = yaml.Unmarshal([]byte(out), &got)
 	require.NoError(err)
 
-	app := got["app"].(map[string]interface{})
-	db := app["db"].(map[string]interface{})
+	app := got["app"].(map[string]any)
+	db := app["db"].(map[string]any)
 	require.Equal("layer", db["host"])
 	require.Equal(10, db["pool"])
-	require.Equal([]interface{}{5433}, db["ports"])
+	require.Equal([]any{5433}, db["ports"])
 	require.Nil(got["feature"])
 	require.Equal("value", got["keep"])
 }
@@ -234,14 +234,14 @@ app:
 	out, err := c.Run()
 	require.NoError(err)
 
-	var got map[string]interface{}
+	var got map[string]any
 	err = yaml.Unmarshal([]byte(out), &got)
 	require.NoError(err)
 
-	app := got["app"].(map[string]interface{})
-	require.Equal([]interface{}{"layer-1", "base-1", "base-2"}, app["prepend-list"])
-	require.Equal([]interface{}{"base-3", "layer-2"}, app["append-list"])
-	require.Equal([]interface{}{"layer-3"}, app["override-list"])
+	app := got["app"].(map[string]any)
+	require.Equal([]any{"layer-1", "base-1", "base-2"}, app["prepend-list"])
+	require.Equal([]any{"base-3", "layer-2"}, app["append-list"])
+	require.Equal([]any{"layer-3"}, app["override-list"])
 	require.NotContains(got, "merge")
 }
 
@@ -274,12 +274,12 @@ app:
 	out, err := c.Run()
 	require.NoError(err)
 
-	var got map[string]interface{}
+	var got map[string]any
 	err = yaml.Unmarshal([]byte(out), &got)
 	require.NoError(err)
 
-	app := got["app"].(map[string]interface{})
-	db := app["db"].(map[string]interface{})
+	app := got["app"].(map[string]any)
+	db := app["db"].(map[string]any)
 	require.Equal("layer", db["host"])
 	require.NotContains(db, "pool")
 }
@@ -312,12 +312,12 @@ priority-items: [layer]
 	out, err := c.Run()
 	require.NoError(err)
 
-	var got map[string]interface{}
+	var got map[string]any
 	err = yaml.Unmarshal([]byte(out), &got)
 	require.NoError(err)
 
-	require.Equal([]interface{}{"base", "layer"}, got["items"])
-	require.Equal([]interface{}{"layer", "base"}, got["priority-items"])
+	require.Equal([]any{"base", "layer"}, got["items"])
+	require.Equal([]any{"layer", "base"}, got["priority-items"])
 }
 
 func TestComposePathSupportsEscapedDotKey(t *testing.T) {
@@ -348,13 +348,13 @@ app:
 	out, err := c.Run()
 	require.NoError(err)
 
-	var got map[string]interface{}
+	var got map[string]any
 	err = yaml.Unmarshal([]byte(out), &got)
 	require.NoError(err)
 
-	app := got["app"].(map[string]interface{})
-	dbMain := app["db.main"].(map[string]interface{})
-	require.Equal([]interface{}{5432, 5433}, dbMain["ports"])
+	app := got["app"].(map[string]any)
+	dbMain := app["db.main"].(map[string]any)
+	require.Equal([]any{5432, 5433}, dbMain["ports"])
 }
 
 func TestComposeReturnsErrorForInvalidMergeStrategy(t *testing.T) {
@@ -454,7 +454,7 @@ func TestComposeWithoutLayersReturnsBaseContent(t *testing.T) {
 	out, err := c.Run()
 	require.NoError(err)
 
-	var got map[string]interface{}
+	var got map[string]any
 	err = yaml.Unmarshal([]byte(out), &got)
 	require.NoError(err)
 	require.Equal(true, got["xmas"])
@@ -499,12 +499,12 @@ app:
 	out, err := c.Run()
 	require.NoError(err)
 
-	var got map[string]interface{}
+	var got map[string]any
 	err = yaml.Unmarshal([]byte(out), &got)
 	require.NoError(err)
 
-	app := got["app"].(map[string]interface{})
-	require.Equal([]interface{}{"prod-a", "cn-main"}, app["backends"])
+	app := got["app"].(map[string]any)
+	require.Equal([]any{"prod-a", "cn-main"}, app["backends"])
 }
 
 func TestComposeTransformListFilterObjectList(t *testing.T) {
@@ -546,15 +546,15 @@ app:
 	out, err := c.Run()
 	require.NoError(err)
 
-	var got map[string]interface{}
+	var got map[string]any
 	err = yaml.Unmarshal([]byte(out), &got)
 	require.NoError(err)
 
-	app := got["app"].(map[string]interface{})
-	backends := app["backends"].([]interface{})
+	app := got["app"].(map[string]any)
+	backends := app["backends"].([]any)
 	require.Len(backends, 2)
-	first := backends[0].(map[string]interface{})
-	second := backends[1].(map[string]interface{})
+	first := backends[0].(map[string]any)
+	second := backends[1].(map[string]any)
 	require.Equal("prod-a", first["name"])
 	require.Equal("prod-b", second["name"])
 }
@@ -589,12 +589,12 @@ inventory:
 	out, err := c.Run()
 	require.NoError(err)
 
-	var got map[string]interface{}
+	var got map[string]any
 	err = yaml.Unmarshal([]byte(out), &got)
 	require.NoError(err)
 
-	inventory := got["inventory"].(map[string]interface{})
-	require.Equal([]interface{}{"prod-a"}, inventory["backends"])
+	inventory := got["inventory"].(map[string]any)
+	require.Equal([]any{"prod-a"}, inventory["backends"])
 }
 
 func TestComposeTransformListFilterReturnsErrorWhenObjectMatchPathMissing(t *testing.T) {
@@ -749,13 +749,13 @@ app:
 	out, err := c.Run()
 	require.NoError(err)
 
-	var got map[string]interface{}
+	var got map[string]any
 	err = yaml.Unmarshal([]byte(out), &got)
 	require.NoError(err)
 
-	app := got["app"].(map[string]interface{})
-	require.Equal([]interface{}{"prod-a", "prod-b"}, app["backend-names"])
-	backends := app["backends"].([]interface{})
+	app := got["app"].(map[string]any)
+	require.Equal([]any{"prod-a", "prod-b"}, app["backend-names"])
+	backends := app["backends"].([]any)
 	require.Len(backends, 2)
 }
 
@@ -829,12 +829,12 @@ app:
 	out, err := c.Run()
 	require.NoError(err)
 
-	var got map[string]interface{}
+	var got map[string]any
 	err = yaml.Unmarshal([]byte(out), &got)
 	require.NoError(err)
 
-	app := got["app"].(map[string]interface{})
-	require.Equal([]interface{}{"prod-a", "prod-b"}, app["backend-names"])
+	app := got["app"].(map[string]any)
+	require.Equal([]any{"prod-a", "prod-b"}, app["backend-names"])
 }
 
 func TestComposeTransformListExtractSupportsSourceFromState(t *testing.T) {
@@ -875,12 +875,12 @@ app:
 	out, err := c.Run()
 	require.NoError(err)
 
-	var got map[string]interface{}
+	var got map[string]any
 	err = yaml.Unmarshal([]byte(out), &got)
 	require.NoError(err)
 
-	app := got["app"].(map[string]interface{})
-	require.Equal([]interface{}{"prod-a", "prod-b"}, app["backend-names"])
+	app := got["app"].(map[string]any)
+	require.Equal([]any{"prod-a", "prod-b"}, app["backend-names"])
 }
 
 func TestComposeTransformListExtractWritesToArrayItemTargetPath(t *testing.T) {
@@ -919,14 +919,14 @@ app:
 	out, err := c.Run()
 	require.NoError(err)
 
-	var got map[string]interface{}
+	var got map[string]any
 	err = yaml.Unmarshal([]byte(out), &got)
 	require.NoError(err)
 
-	app := got["app"].(map[string]interface{})
-	backends := app["backends"].([]interface{})
-	first := backends[0].(map[string]interface{})
-	require.Equal([]interface{}{"prod-a", "prod-b"}, first["names"])
+	app := got["app"].(map[string]any)
+	backends := app["backends"].([]any)
+	first := backends[0].(map[string]any)
+	require.Equal([]any{"prod-a", "prod-b"}, first["names"])
 }
 
 func TestComposeTransformListExtractWritesToSelectorTargetPath(t *testing.T) {
@@ -971,16 +971,16 @@ app:
 	out, err := c.Run()
 	require.NoError(err)
 
-	var got map[string]interface{}
+	var got map[string]any
 	err = yaml.Unmarshal([]byte(out), &got)
 	require.NoError(err)
 
-	app := got["app"].(map[string]interface{})
-	backends := app["backends"].([]interface{})
-	api := backends[0].(map[string]interface{})
-	worker := backends[1].(map[string]interface{})
-	require.Equal([]interface{}{"prod-a", "prod-b"}, api["names"])
-	require.Equal([]interface{}{}, worker["names"])
+	app := got["app"].(map[string]any)
+	backends := app["backends"].([]any)
+	api := backends[0].(map[string]any)
+	worker := backends[1].(map[string]any)
+	require.Equal([]any{"prod-a", "prod-b"}, api["names"])
+	require.Equal([]any{}, worker["names"])
 }
 
 func TestComposeTransformListExtractWritesToQuotedSelectorTargetPath(t *testing.T) {
@@ -1023,15 +1023,15 @@ groups:
 	out, err := c.Run()
 	require.NoError(err)
 
-	var got map[string]interface{}
+	var got map[string]any
 	err = yaml.Unmarshal([]byte(out), &got)
 	require.NoError(err)
 
-	groups := got["groups"].([]interface{})
-	first := groups[0].(map[string]interface{})
-	second := groups[1].(map[string]interface{})
-	require.Equal([]interface{}{"p1", "p2"}, first["ports"])
-	require.Equal([]interface{}{}, second["ports"])
+	groups := got["groups"].([]any)
+	first := groups[0].(map[string]any)
+	second := groups[1].(map[string]any)
+	require.Equal([]any{"p1", "p2"}, first["ports"])
+	require.Equal([]any{}, second["ports"])
 }
 
 func TestComposeTransformSelectorTargetReturnsErrorWhenNotUnique(t *testing.T) {
@@ -1290,11 +1290,11 @@ app: {}
 	out, err := c.Run()
 	require.NoError(err)
 
-	var got map[string]interface{}
+	var got map[string]any
 	err = yaml.Unmarshal([]byte(out), &got)
 	require.NoError(err)
 
-	app := got["app"].(map[string]interface{})
+	app := got["app"].(map[string]any)
 	require.Equal("http://bar.example", app["url"])
 }
 
@@ -1332,21 +1332,21 @@ app: {}
 	out, err := c.Run()
 	require.NoError(err)
 
-	var got map[string]interface{}
+	var got map[string]any
 	err = yaml.Unmarshal([]byte(out), &got)
 	require.NoError(err)
 
-	app := got["app"].(map[string]interface{})
-	labels := app["labels"].(map[string]interface{})
+	app := got["app"].(map[string]any)
+	labels := app["labels"].(map[string]any)
 	require.Equal("bar", labels["env"])
 	require.Equal("keep", labels["foo-key"])
 
-	nested := labels["nested"].(map[string]interface{})
+	nested := labels["nested"].(map[string]any)
 	require.Equal("foo", nested["note"])
 
-	arr := labels["arr"].([]interface{})
+	arr := labels["arr"].([]any)
 	require.Equal("foo", arr[0])
-	arrItem := arr[1].(map[string]interface{})
+	arrItem := arr[1].(map[string]any)
 	require.Equal("foo", arrItem["note"])
 }
 
@@ -1384,16 +1384,16 @@ app: {}
 	out, err := c.Run()
 	require.NoError(err)
 
-	var got map[string]interface{}
+	var got map[string]any
 	err = yaml.Unmarshal([]byte(out), &got)
 	require.NoError(err)
 
-	app := got["app"].(map[string]interface{})
-	payload := app["payload"].(map[string]interface{})
+	app := got["app"].(map[string]any)
+	payload := app["payload"].(map[string]any)
 
 	require.Equal("bar-name", payload["name"])
-	require.Equal([]interface{}{"bar-a", "bar-b"}, payload["ports"])
-	nested := payload["nested"].(map[string]interface{})
+	require.Equal([]any{"bar-a", "bar-b"}, payload["ports"])
+	nested := payload["nested"].(map[string]any)
 	require.Equal("bar-c", nested["text"])
 	require.Equal("x", payload["keep-key"])
 }
@@ -1473,11 +1473,11 @@ func TestComposeOutputUsesTwoSpaceIndentForNestedLists(t *testing.T) {
 
 	c := compose.NewMock("base.yaml", nil)
 	fs := c.GetFilesystem()
-	writeFile(t, fs, "base.yaml", "app:\n  db:\n    ports:\n      - 5432\n")
+	writeFile(t, fs, "base.yaml", "app:\n  db:\n    ports:\n      - 5432")
 
 	out, err := c.Run()
 	require.NoError(err)
-	require.Contains(out, "ports:\n    - 5432\n")
+	require.Contains(out, "ports:\n      - 5432")
 }
 
 func TestComposeOperatorsMetadataSupportsTransformThenMerge(t *testing.T) {
@@ -1520,12 +1520,12 @@ app:
 	out, err := c.Run()
 	require.NoError(err)
 
-	var got map[string]interface{}
+	var got map[string]any
 	err = yaml.Unmarshal([]byte(out), &got)
 	require.NoError(err)
 
-	app := got["app"].(map[string]interface{})
-	require.Equal([]interface{}{"prod-a", "prod-b"}, app["backend-names"])
+	app := got["app"].(map[string]any)
+	require.Equal([]any{"prod-a", "prod-b"}, app["backend-names"])
 }
 
 func TestComposeOperatorsCanInterleaveMergeAndStateTransforms(t *testing.T) {
@@ -1563,11 +1563,11 @@ app:
 	out, err := c.Run()
 	require.NoError(err)
 
-	var got map[string]interface{}
+	var got map[string]any
 	err = yaml.Unmarshal([]byte(out), &got)
 	require.NoError(err)
 
-	app := got["app"].(map[string]interface{})
+	app := got["app"].(map[string]any)
 	require.Equal("http://bar.example", app["url"])
 }
 

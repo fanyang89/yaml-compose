@@ -49,8 +49,8 @@ func TestValidateLayerName(t *testing.T) {
 func TestMergeMapsWithNilBase(t *testing.T) {
 	require := require.New(t)
 
-	got := mergeMaps(nil, map[string]interface{}{"service": "layer"})
-	require.Equal(map[string]interface{}{"service": "layer"}, got)
+	got := mergeMaps(nil, map[string]any{"service": "layer"})
+	require.Equal(map[string]any{"service": "layer"}, got)
 }
 
 func TestRunReturnsMarshalError(t *testing.T) {
@@ -58,7 +58,7 @@ func TestRunReturnsMarshalError(t *testing.T) {
 
 	c := NewMock("base.yaml", nil)
 	originalMarshal := c.marshal
-	c.marshal = func(in interface{}) ([]byte, error) {
+	c.marshal = func(in any) ([]byte, error) {
 		return nil, errors.New("marshal failed")
 	}
 	t.Cleanup(func() {
