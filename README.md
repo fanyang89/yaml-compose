@@ -7,12 +7,30 @@
 
 For Chinese docs, see the [Chinese documentation](README.zh-CN.md).
 
+## Install
+
+- Go:
+
+```bash
+go install github.com/fanyang89/yaml-compose@latest
+```
+
+- Binary packages: [GitHub Releases](https://github.com/fanyang89/yaml-compose/releases)
+
 ## Quick Start
 
 1. Create `base.yaml`.
 2. Create layer directory `base.yaml.d/`.
 3. Add layer file like `base.yaml.d/1-prod.yaml`.
-4. Run `yaml-compose base.yaml`.
+4. Your files should look like this:
+
+```text
+.
+|-- base.yaml
+`-- base.yaml.d
+    `-- 1-prod.yaml
+```
+5. Run `yaml-compose base.yaml`.
 
 `base.yaml`:
 
@@ -58,17 +76,7 @@ app:
       - 5433
 ```
 
-## Install
-
-- Go:
-
-```bash
-go install github.com/fanyang89/yaml-compose@latest
-```
-
-- Binary packages: [GitHub Releases](https://github.com/fanyang89/yaml-compose/releases)
-
-## Basic Usage
+More commands:
 
 ```bash
 yaml-compose base.yaml

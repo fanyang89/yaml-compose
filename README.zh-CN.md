@@ -4,12 +4,30 @@
 
 英文文档请查看 [英文文档](README.md)。
 
+## 安装
+
+- 使用 Go 安装：
+
+```bash
+go install github.com/fanyang89/yaml-compose@latest
+```
+
+- 二进制下载：[GitHub Releases](https://github.com/fanyang89/yaml-compose/releases)
+
 ## 快速开始
 
 1. 创建 `base.yaml`。
 2. 创建目录 `base.yaml.d/`。
 3. 添加 layer 文件，例如 `base.yaml.d/1-prod.yaml`。
-4. 运行 `yaml-compose base.yaml`。
+4. 此时文件结构应如下：
+
+```text
+.
+|-- base.yaml
+`-- base.yaml.d
+    `-- 1-prod.yaml
+```
+5. 运行 `yaml-compose base.yaml`。
 
 `base.yaml`:
 
@@ -55,17 +73,7 @@ app:
       - 5433
 ```
 
-## 安装
-
-- 使用 Go 安装：
-
-```bash
-go install github.com/fanyang89/yaml-compose@latest
-```
-
-- 二进制下载：[GitHub Releases](https://github.com/fanyang89/yaml-compose/releases)
-
-## 常用命令
+更多命令：
 
 ```bash
 yaml-compose base.yaml
