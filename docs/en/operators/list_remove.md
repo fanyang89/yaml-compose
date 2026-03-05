@@ -24,6 +24,7 @@
       equals: prod
       not_equals: dev
       has: blue
+      has_not: green
     remove: all|single
 ```
 
@@ -34,11 +35,13 @@
   - `equals: <value>`
   - `not_equals: <value>`
   - `has: <value>`
+  - `has_not: <value>`
 - Empty means: `null`, `""`, `{}`, `[]`
 - `has` behavior:
   - string field: substring match
   - list field: contains item by equality
   - object field: contains key (expected value must be string)
+- `has_not` uses the same rules as `has`, but negates the match result
 - `remove` default is `all`
 - `remove: single` removes the first matched item only
 

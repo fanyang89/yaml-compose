@@ -301,16 +301,26 @@ func matchesListRemoveCondition(value any, remove layerListRemove) (bool, error)
 		return !reflect.DeepEqual(value, remove.value), nil
 	case listRemovePredicateHas:
 		return valueHas(value, remove.value)
+	case listRemovePredicateHasNot:
+		return valueHasNot(value, remove.value)
 	default:
 		return false, fmt.Errorf("unsupported list_remove condition %q", remove.predicate)
 	}
+}
+
+func valueHasNot(value any, expected any) (bool, error) {
+	matched, err := valueHas(value, expected)
+	if err != nil {
+		return false, err
+	}
+	return !matched, nil
 }
 
 func valueHas(value any, expected any) (bool, error) {
 	if s, ok := value.(string); ok {
 		expectedString, ok := expected.(string)
 		if !ok {
-			return false, fmt.Errorf("when.has requires string expected value when match_path resolves to string")
+			return false, fmt.Errorf("when.has/has_not requires string expected value when match_path resolves to string")
 		}
 		return strings.Contains(s, expectedString), nil
 	}
@@ -327,13 +337,13 @@ func valueHas(value any, expected any) (bool, error) {
 	if m, ok := value.(map[string]any); ok {
 		expectedKey, ok := expected.(string)
 		if !ok {
-			return false, fmt.Errorf("when.has requires string expected value when match_path resolves to object")
+			return false, fmt.Errorf("when.has/has_not requires string expected value when match_path resolves to object")
 		}
 		_, found := m[expectedKey]
 		return found, nil
 	}
 
-	return false, fmt.Errorf("when.has requires match_path to resolve to string, list, or object")
+	return false, fmt.Errorf("when.has/has_not requires match_path to resolve to string, list, or object")
 }
 
 func cloneAny(v any) any {

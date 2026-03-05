@@ -124,6 +124,7 @@ type layerListRemoveWhenMetadata struct {
 	Equals    any  `yaml:"equals"`
 	NotEquals any  `yaml:"not_equals"`
 	Has       any  `yaml:"has"`
+	HasNot    any  `yaml:"has_not"`
 }
 
 type layerTransform struct {
@@ -197,6 +198,7 @@ const (
 	listRemovePredicateEquals    listRemovePredicate = "equals"
 	listRemovePredicateNotEquals listRemovePredicate = "not_equals"
 	listRemovePredicateHas       listRemovePredicate = "has"
+	listRemovePredicateHasNot    listRemovePredicate = "has_not"
 )
 
 type includeMode string

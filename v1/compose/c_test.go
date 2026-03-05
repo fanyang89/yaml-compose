@@ -2689,6 +2689,85 @@ app: {}
 	require.Equal("worker", backends[0].(map[string]any)["name"])
 }
 
+func TestComposeTransformListRemoveRemovesWhenHasNotMatches(t *testing.T) {
+	require := require.New(t)
+
+	c := compose.NewMock("base.yaml", []string{"1-layer.yaml"})
+	fs := c.GetFilesystem()
+
+	base := `app:
+  backends:
+    - name: api
+      meta:
+        tags: [prod, blue]
+    - name: worker
+      meta:
+        tags: [green]
+`
+	layer := `operators:
+  - kind: list_remove
+    source:
+      from: state
+      path: app.backends
+    target:
+      path: app.backends
+    list_remove:
+      match_path: meta.tags
+      when:
+        has_not: blue
+---
+app: {}
+`
+	baseDir := writeBaseFile(t, fs, "base.yaml", base)
+	writeLayerFile(t, fs, baseDir, "1-layer.yaml", layer)
+
+	out, err := c.Run()
+	require.NoError(err)
+
+	var got map[string]any
+	err = yaml.Unmarshal([]byte(out), &got)
+	require.NoError(err)
+
+	app := got["app"].(map[string]any)
+	backends := app["backends"].([]any)
+	require.Len(backends, 1)
+	require.Equal("api", backends[0].(map[string]any)["name"])
+}
+
+func TestComposeTransformListRemoveReturnsErrorWhenHasNotExpectedTypeInvalid(t *testing.T) {
+	require := require.New(t)
+
+	c := compose.NewMock("base.yaml", []string{"1-layer.yaml"})
+	fs := c.GetFilesystem()
+
+	base := `app:
+  backends:
+    - name: api
+      meta:
+        role: api
+`
+	layer := `operators:
+  - kind: list_remove
+    source:
+      from: state
+      path: app.backends
+    target:
+      path: app.backends
+    list_remove:
+      match_path: meta.role
+      when:
+        has_not: [api]
+---
+app: {}
+`
+	baseDir := writeBaseFile(t, fs, "base.yaml", base)
+	writeLayerFile(t, fs, baseDir, "1-layer.yaml", layer)
+
+	_, err := c.Run()
+	require.Error(err)
+	require.Contains(err.Error(), "when.has/has_not requires string expected value")
+}
+
 func TestComposeTransformListRemoveReturnsErrorWhenMultipleConditionsSet(t *testing.T) {
 	require := require.New(t)
 

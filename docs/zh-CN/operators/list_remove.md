@@ -24,6 +24,7 @@
       equals: prod
       not_equals: dev
       has: blue
+      has_not: green
     remove: all|single
 ```
 
@@ -34,11 +35,13 @@
   - `equals: <value>`
   - `not_equals: <value>`
   - `has: <value>`
+  - `has_not: <value>`
 - empty 判定包含：`null`、`""`、`{}`、`[]`
 - `has` 规则：
   - 字符串字段：子串匹配
   - 列表字段：按等值判断是否包含
   - 对象字段：判断是否包含指定 key（期望值需为字符串）
+- `has_not` 规则与 `has` 一致，但结果取反
 - `remove` 默认值为 `all`
 - `remove: single` 只删除第一个匹配项
 

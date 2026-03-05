@@ -193,9 +193,14 @@ func parseListRemoveCondition(meta layerListRemoveWhenMetadata, fieldPrefix stri
 		predicate = listRemovePredicateHas
 		value = meta.Has
 	}
+	if meta.HasNot != nil {
+		configured++
+		predicate = listRemovePredicateHasNot
+		value = meta.HasNot
+	}
 
 	if configured == 0 {
-		return "", nil, fmt.Errorf("invalid %s.list_remove.when: set one of is_empty=true, equals, not_equals, has", fieldPrefix)
+		return "", nil, fmt.Errorf("invalid %s.list_remove.when: set one of is_empty=true, equals, not_equals, has, has_not", fieldPrefix)
 	}
 	if configured > 1 {
 		return "", nil, fmt.Errorf("invalid %s.list_remove.when: only one condition is supported", fieldPrefix)
